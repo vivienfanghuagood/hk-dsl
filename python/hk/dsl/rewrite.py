@@ -447,24 +447,42 @@ def _compile(fn) -> Optional[types.CodeType]:
                 if isinstance(c, types.CodeType) and c.co_name == fdef.name)
 
 
-def rewrite(fn):
+def rewrite(fn, extra_globals=None):
     """`fn` with its `for`, `if` and `while` routed through hk.dsl.control. Cached on
     the code object. A function whose source cannot be read runs as it is,
-    and the errors its device control flow raises then say so."""
+    and the errors its device control flow raises then say so.
+
+    `extra_globals`: names the body sees over its module's (a kernel's bound dtype
+    parameters, `T` -> hk.bf16), on a copy of the module's globals made for this call."""
     code = fn.__code__
     if code not in _CACHE:
         _CACHE[code] = _compile(fn)
     new_code = _CACHE[code]
+    g = fn.__globals__ if not extra_globals else {**fn.__globals__, **extra_globals}
+    cells = dict(zip(code.co_freevars, fn.__closure__ or ()))
+    if extra_globals:
+        # A dtype parameter the body reads from an enclosing function (`U = hk.TypeVar("U")`
+        # there) is a closure cell, not a global: it gets the bound dtype the same way.
+        for n, c in cells.items():
+            try:
+                if n in extra_globals and type(c.cell_contents).__name__ == "TypeVar":
+                    cells[n] = types.CellType(extra_globals[n])
+            except ValueError:      # an empty cell
+                pass
     if new_code is None:
         why = _UNREAD.get(code)
+        if extra_globals:
+            kwd = fn.__kwdefaults__
+            fn = types.FunctionType(code, g, fn.__name__, fn.__defaults__,
+                                    tuple(cells[n] for n in code.co_freevars) or None)
+            fn.__kwdefaults__ = kwd
         return fn if why is None else _within(fn, f"`{fn.__qualname__}` ({why})")
     from . import control  # noqa: PLC0415
 
-    cells = dict(zip(code.co_freevars, fn.__closure__ or ()))
     hk_cell = types.CellType(_runtime(control))
     closure = tuple(cells[n] if n in cells else hk_cell
                     for n in new_code.co_freevars)
-    new = types.FunctionType(new_code, fn.__globals__, fn.__name__,
+    new = types.FunctionType(new_code, g, fn.__name__,
                              fn.__defaults__, closure)
     new.__kwdefaults__ = fn.__kwdefaults__
     new.__dict__.update(fn.__dict__)

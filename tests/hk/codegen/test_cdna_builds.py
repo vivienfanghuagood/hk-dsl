@@ -63,8 +63,7 @@ def test_it_builds_without_spilling(arch, name):
     # The device scaffold: the code-object launcher's, whose layout table
     # names every field of the strided gl.
     k = dict(_kernels())[name]
-    k = hk.kernel(k.fn, arch=arch, warps=k.warps, grid=k.grid_fn, name=k.name,
-                  defines=getattr(k, "defines", None))
+    k = k.for_arch(arch)
     b = hc.build(k.with_defines(scaffold.device(k.trace())), arch, name=k.name, kind="co")
     (r,) = b.kernels
     assert not r.spills

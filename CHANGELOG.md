@@ -6,6 +6,18 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+**One kernel for every dtype and warp count** (#345). A tensor annotated `hk.Tensor[hk.T]` takes its
+dtype from the call -- read from the first tensor annotated with it (every tensor sharing it must
+agree), or given as `T=hk.fp16` -- and a keyword-only parameter named `warps` makes the warp count a
+per-call argument (`k(a, b, o, warps=8)`; the grid reads it as `p.warps`). Each (dtype, warps) is
+its own specialization, traced, built and named as before (`silu_mul__Tbf16_warps4`); its C++ is
+the factory version's but for the name. `hk.TypeVar("U")` adds a second dtype parameter;
+`k.variant(T=..., warps=...)` is a specialization, and `trace` / `source` / `build` / `specialize`
+take the same keywords. Old annotations, factories, `@hk.specialize` and `hk.kernel(warps=)` keep
+their meaning. `hk.ops` builds `fused.silu_mul_kernel`, `quant.quantize_kernel` and
+`quant.dequantize_kernel` this way (their tables now hold the specializations, under new kernel
+names: one recompile each). docs/language.md, "One kernel for every dtype and warp count".
+
 ## 0.9.16
 
 hk-dsl 0.9.16: on gfx1100, AMD Quark W4A16 checkpoints run on hk's 4-bit forms by default (`vllm_quark`,

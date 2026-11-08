@@ -123,6 +123,10 @@ Analysis.summary Bool.to_int Bool.type Build.report Coord.type Coord.unit Digit.
 Global.batch Global.cols Global.depth Global.dtype Global.gather Global.load_elems
 Global.post_elems Global.rows Global.scatter Global.store_elems Global.take_elems Global.tile
 Global.type Granules.type Group.commit Group.load Group.stage Group.stage_buffer
+GenericKernel.build GenericKernel.compile GenericKernel.for_arch GenericKernel.placed
+GenericKernel.placement_choice GenericKernel.preloaded GenericKernel.resident_capacity
+GenericKernel.source GenericKernel.specialize GenericKernel.trace GenericKernel.variant
+Kernel.for_arch hk.GenericKernel hk.T hk.TypeVar
 Group.stage_rows Group.store Group.threads Group.wait_for Int.type Kernel.arch Kernel.build
 Kernel.compile Kernel.placed Kernel.placement_choice Kernel.preloaded Kernel.resident_capacity
 Kernel.source Kernel.specialize Kernel.trace MxScales.copy MxScales.type Placement.chunked

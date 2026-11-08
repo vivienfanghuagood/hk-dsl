@@ -35,6 +35,7 @@ of the tile width.
 from functools import lru_cache as _lru_cache
 
 from .. import dsl as hk
+from ..dsl import T
 from ..types import bf16, fp16, fp32
 from .norm import _overlaps
 
@@ -72,45 +73,45 @@ def _start(idx, block: int, extent):
 
 
 def _silu_mul_grid(p):
-    return (hk.cdiv(p.o.cols, p.COLS * p.WARPS * p.TILES),
+    return (hk.cdiv(p.o.cols, p.COLS * p.warps * p.TILES),
             hk.cdiv(p.o.rows, p.ROWS), 1)
 
 
-def _silu_mul_kernel(name: str, dtype, warps: int):
-    def body(a: hk.Tensor[dtype], b: hk.Tensor[dtype], o: hk.Tensor[dtype], *,
-             ROWS=ROWS, COLS=COLS, WARPS=warps, TILES=1):
-        # fp32 throughout: base_ops::silu is specialised for float only, and
-        # the load converts on the way in for free, so there is nothing to pay
-        # for the extra precision but register width.
-        t = _ftile(ROWS, COLS)
-        ncols = o.cols
-        row_lo = _start(hk.arch.block_idx.y, ROWS, o.rows)
-        base = hk.arch.block_idx.x * (WARPS * TILES)
+@hk.kernel(grid=_silu_mul_grid, name="silu_mul")
+def silu_mul_kernel(a: hk.Tensor[T], b: hk.Tensor[T], o: hk.Tensor[T], *, warps=1,
+                    ROWS=ROWS, COLS=COLS, TILES=1):
+    """silu(a) * b for every dtype and warp count: one definition, a specialization per
+    (T, warps) -- `silu_mul__Tbf16_warps4` -- picked at the call (hk.T, `warps`)."""
+    # fp32 throughout: base_ops::silu is specialised for float only, and
+    # the load converts on the way in for free, so there is nothing to pay
+    # for the extra precision but register width.
+    t = _ftile(ROWS, COLS)
+    ncols = o.cols
+    row_lo = _start(hk.arch.block_idx.y, ROWS, o.rows)
+    base = hk.arch.block_idx.x * (warps * TILES)
 
-        def block_of(i):
-            """The column block warp `warp_id` covers at step `i`.
+    def block_of(i):
+        """The column block warp `warp_id` covers at step `i`.
 
-            Strided like norm's: at any step the warps of a workgroup are on
-            WARPS adjacent blocks, one contiguous run, rather than WARPS places
-            a group apart.
-            """
-            cb = base + i * WARPS if i else base
-            return cb + hk.arch.warp_id() if WARPS > 1 else cb
+        Strided like norm's: at any step the warps of a workgroup are on
+        `warps` adjacent blocks, one contiguous run, rather than `warps` places
+        a group apart.
+        """
+        cb = base + i * warps if i else base
+        return cb + hk.arch.warp_id() if warps > 1 else cb
 
-        idx = [hk.elem_coord(0, 0, row_lo, _start(block_of(i), COLS, ncols))
-               for i in range(TILES)]
-        # Both loads of every tile before any of the arithmetic. Written this
-        # way rather than as a load/compute/store per tile so that the loads
-        # are adjacent in the generated C++ and the scheduler has TILES*2
-        # outstanding, not one.
-        xs = [a[i].load(t) for i in idx]
-        bs = [b[i].load(t) for i in idx]
-        for x, bv, i in zip(xs, bs, idx):
-            x.silu(into=x)
-            x *= bv
-            o[i] = x.to(dtype)
-
-    return hk.kernel(body, warps=warps, grid=_silu_mul_grid, name=name)
+    idx = [hk.elem_coord(0, 0, row_lo, _start(block_of(i), COLS, ncols))
+           for i in range(TILES)]
+    # Both loads of every tile before any of the arithmetic. Written this
+    # way rather than as a load/compute/store per tile so that the loads
+    # are adjacent in the generated C++ and the scheduler has TILES*2
+    # outstanding, not one.
+    xs = [a[i].load(t) for i in idx]
+    bs = [b[i].load(t) for i in idx]
+    for x, bv, i in zip(xs, bs, idx):
+        x.silu(into=x)
+        x *= bv
+        o[i] = x.to(T)
 
 
 def _strip_silu_mul_kernel(name: str, dtype, warps: int):
@@ -415,15 +416,14 @@ def _rope_kernel(name: str, dtype, half: int):
 _DTYPES = {"bf16": bf16, "fp16": fp16, "fp32": fp32}
 
 #: Warp counts a silu_mul workgroup can have. Same set as the norm kernels;
-#: WARPS is a launch geometry and so has to be baked into the kernel, while
+#: KERNELS holds silu_mul_kernel's specialization for each (dtype, warps), and
 #: TILES rides in as a constexpr argument.
 WARP_COUNTS = tuple(1 << i for i in range(5))  # 1, 2, 4, 8, 16
 
 KERNELS = {}
 for _s, _dt in _DTYPES.items():
     for _w in WARP_COUNTS:
-        KERNELS[f"silu_mul_{_s}_w{_w}"] = _silu_mul_kernel(
-            f"silu_mul_{_s}_w{_w}", _dt, _w)
+        KERNELS[f"silu_mul_{_s}_w{_w}"] = silu_mul_kernel.variant(T=_dt, warps=_w)
     KERNELS[f"rope_{_s}"] = _rope_kernel(f"rope_{_s}", _dt, COLS)
 del _s, _dt, _w
 

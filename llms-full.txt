@@ -87,8 +87,8 @@ throughout. A kernel that converts in registers and must match torch bit
 for bit -- a residual `x + r` of two bf16 values, which is a tie about one
 time in ten -- sets it. The grid is a
 function of the parameters: `p.<tensor>.<batch|depth|rows|cols>` gives an
-extent and `p.<CONSTEXPR>` gives a constexpr value, and it must return a
-3-tuple. A kernel that names no `arch` is built for `hk.target.current_arch()`
+extent, `p.<CONSTEXPR>` gives a constexpr value and `p.warps` the warp count,
+and it must return a 3-tuple. A kernel that names no `arch` is built for `hk.target.current_arch()`
 (see [runtime](runtime.md#which-gpu)). `max_vgprs` and `min_occupancy` are
 extra build gates on top of the unconditional no-spill rule
 ([resource gates](runtime.md#the-resource-gates)). `max_occupancy=N` is not a
@@ -123,10 +123,61 @@ a configured kernel to something that will call it many times.
 A tensor with fewer than four dimensions fills the trailing ones, so a 2-D
 tensor is `(rows, cols)` (`include/pyutils/hk_bind.cuh`).
 
+### One kernel for every dtype and warp count
+
+A tensor annotated with a *dtype parameter*, `hk.Tensor[hk.T]`, takes its dtype
+from the call, and a keyword-only parameter named `warps` makes the warp count
+an argument. One definition then covers every dtype and warp count:
+
+```python
+@hk.kernel(grid=lambda p: (hk.cdiv(p.o.cols, 64 * p.warps), hk.cdiv(p.o.rows, 16), 1))
+def gated_silu(a: hk.Tensor[hk.T], b: hk.Tensor[hk.T], o: hk.Tensor[hk.T], *, warps=4):
+    col = (hk.arch.block_idx.x * warps + hk.arch.warp_id()) * 64
+    idx = hk.elem_coord(0, 0, hk.arch.block_idx.y * 16, col)
+    t = hk.RT(hk.fp32, 16, 64)              # the load converts; silu is fp32
+    g = a[idx].load(t)
+    g.silu(into=g)
+    o[idx] = (g * b[idx].load(t)).to(o.dtype)
+```
+
+```python
+gated_silu(a, b, o)                 # T read from `a`: bf16 tensors, a bf16 kernel; 4 warps
+gated_silu(a16, b16, o16, warps=8)  # fp16, 8 warps
+gated_silu(a, b, o, T=hk.bf16)      # T given: nothing is read
+```
+
+- **T is inferred** from the first tensor annotated with it, and every tensor
+  sharing it must agree (a call with a bf16 `a` and an fp16 `b` is refused,
+  naming both). `T=hk.fp16` in the call sets it instead, and the call then reads
+  no dtype. A second parameter is `U = hk.TypeVar("U")`: `hk.Tensor[U]`.
+- **In the body** the dtype is a tensor's `.dtype` (`o.dtype` above), or the
+  parameter's own name: `T` is the bound `hk.DType` in a kernel that imports it
+  (`from hk import T`; `hk.RT(T, 16, 64)`, `x.to(T)`). A module that also defines
+  some other global `T` -- a tile, say -- is told so when the kernel is made.
+- **`warps`** is the workgroup's warp count, per call (`warps=8`), with the
+  parameter's default otherwise; in the body it is a plain int, in the grid
+  `p.warps`. `hk.kernel(warps=...)` is then not also given. (`p.warps` reads any
+  kernel's warp count.)
+- **Each (dtypes, warps) is its own kernel**, traced, built and cached as if
+  written for that dtype -- the generated C++ is the same as a factory's, but
+  for the name: `gated_silu__Tbf16_warps4`. `gated_silu.variant(T=hk.fp16,
+  warps=8)` is that kernel, for whatever takes a `hk.Kernel`; `trace`, `source`,
+  `build` and `specialize` take the same keywords (`T=` is required there:
+  there are no tensors to read it from).
+- **A launch costs what a plain kernel's does**: the call reads the `.dtype` of
+  each tensor annotated with an inferred parameter and probes one dict. On a
+  W7900D, `k(a, b, o)` is within 0.1 us of calling the specialization itself,
+  and a call with `T=` or `warps=` about 0.2 us more than a plain kernel's call
+  with a constexpr keyword (`tools/hk-bench/generic_launch.py`).
+
+`hk.ops` builds `fused.silu_mul_kernel`, `quant.quantize_kernel` and
+`quant.dequantize_kernel` this way; their tables (`fused.KERNELS[...]`) hold
+the specializations.
+
 ### Kernels made by a factory
 
-What a constexpr cannot carry -- a dtype in an annotation, `warps`, the arch,
-a Python function the body calls -- is a factory's argument: a function that
+What neither a constexpr nor a dtype parameter carries -- the arch, a Python
+function the body calls -- is a factory's argument: a function that
 defines the kernel and returns it. `@hk.specialize` makes the factory build each
 variant once and names the kernel after its arguments:
 
@@ -1679,8 +1730,11 @@ The language: what `import hk` gives a kernel author. A kernel body is traced on
 - [`hk.kernel`](#hkkernel)
 - [`hk.func`](#hkfunc)
 - [`hk.Kernel`](#hkkernel)
+- [`hk.GenericKernel`](#hkgenerickernel)
 - [`hk.TracedKernel`](#hktracedkernel)
 - [`hk.Tensor`](#hktensor)
+- [`hk.TypeVar`](#hktypevar)
+- [`hk.T`](#hkt)
 - [`hk.Constexpr`](#hkconstexpr)
 - [`hk.RT`](#hkrt)
 - [`hk.RS`](#hkrs)
@@ -1752,7 +1806,7 @@ The language: what `import hk` gives a kernel author. A kernel body is traced on
 ### `hk.kernel`
 
 ```python
-hk.kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, max_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None, noalias: bool = False, preload: bool = False, resident: bool = False, placement=None)
+hk.kernel(fn=None, *, arch: Optional[str] = None, warps: Optional[int] = None, grid=None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, max_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None, noalias: bool = False, preload: bool = False, resident: bool = False, placement=None)
 ```
 
 Mark a function as a tile kernel. See the module docstring for the
@@ -1856,6 +1910,19 @@ Kernel.compile(self, **const_overrides: Any)
 
 Generate, compile and load. Returns the loaded extension module.
 
+#### `Kernel.for_arch`
+
+```python
+Kernel.for_arch(self, arch: str, name: Optional[str] = None) -> Kernel
+```
+
+*New after 0.9.16*
+
+This kernel built for `arch`: the same body, warps, grid, constexpr defaults and
+options (a specialization keeps its dtypes), its own traces and builds. `name=` renames
+it. What a test or a probe that targets another arch wants, in place of re-wrapping
+`k.fn` (which a dtype-parameter specialization cannot be).
+
 #### `Kernel.placed`
 
 ```python
@@ -1907,6 +1974,134 @@ The cheaper surface is to pass the constexpr to the call itself --
 object at all. specialize() is for handing a configured kernel to
 something that will call it many times.
 
+### `hk.GenericKernel`
+
+```python
+class hk.GenericKernel(fn: Callable, **kw: Any)
+```
+
+*New after 0.9.16*
+
+A kernel with dtype parameters (`hk.Tensor[hk.T]`) and/or a `warps` argument: one
+definition, a specialization per (dtypes, warps) -- an ordinary Kernel, traced, built and
+named `<kernel>__T<dtype>_warps<n>` -- picked at the call.
+
+    @hk.kernel(grid=lambda p: (hk.cdiv(p.o.cols, 64 * p.warps), hk.cdiv(p.o.rows, 16), 1))
+    def gated_silu(a: hk.Tensor[hk.T], b: hk.Tensor[hk.T], o: hk.Tensor[hk.T], *, warps=4):
+        ...
+    gated_silu(a, b, o)                  # T read from the tensors (they must agree); 4 warps
+    gated_silu(a16, b16, o16, warps=8)   # T = fp16; 8 warps
+    gated_silu(a, b, o, T=hk.bf16)       # T given: nothing read
+    gated_silu.variant(T=hk.fp16)        # the specialization itself: gated_silu__Tfp16_warps4
+
+trace / source / build / compile / specialize take the same keywords (`T=` is required
+there: no tensors to read it from).
+
+#### `GenericKernel.variant`
+
+```python
+GenericKernel.variant(self, **kw: Any) -> Kernel
+```
+
+The specialization for these dtype parameters (and `warps=`): an ordinary Kernel,
+named `<kernel>__T<dtype>[_warps<n>]`. Other keywords are not taken here.
+
+#### `GenericKernel.trace`
+
+```python
+GenericKernel.trace(self, **kw: Any) -> TracedKernel
+```
+
+Run the body once into an hk module and run the passes over it.
+No GPU, no compiler.
+
+#### `GenericKernel.source`
+
+```python
+GenericKernel.source(self, scaffold: str = 'pybind', **kw: Any) -> str
+```
+
+The generated HipKittens C++. Readable on purpose -- it is the
+artifact you take to /kernel-resource-check when something spills.
+
+#### `GenericKernel.build`
+
+```python
+GenericKernel.build(self, **kw: Any)
+```
+
+Generate and compile. Returns a runtime.Build, which carries the
+per-instantiation resource numbers as well as the .so.
+
+The compile step gates on ScratchSize and register spills: a kernel that
+spills is not slow here, it is *wrong*, because include/rdna3 hand-manages
+s_waitcnt. A spilling build raises rather than being returned.
+
+Needs hipcc but not a GPU, which is what makes the whole development
+loop runnable on a machine with no Radeon in it.
+
+#### `GenericKernel.compile`
+
+```python
+GenericKernel.compile(self, **kw: Any)
+```
+
+Generate, compile and load. Returns the loaded extension module.
+
+#### `GenericKernel.resident_capacity`
+
+```python
+GenericKernel.resident_capacity(self, **kw: Any) -> int
+```
+
+How many workgroups of this kernel the current GPU holds at once:
+its CUs times the workgroups a CU fits by registers and by LDS (the
+smaller), from the build's own resource report.
+
+#### `GenericKernel.specialize`
+
+```python
+GenericKernel.specialize(self, **kw: Any) -> Kernel
+```
+
+The specialization for the dtype parameters and warps given, with the other
+keywords as its constexpr defaults.
+
+#### `GenericKernel.placement_choice`
+
+```python
+GenericKernel.placement_choice(self, *tensors: Any, **kw: Any)
+```
+
+hk.dsl.placement.choose for these tensors: whether
+placement="auto" launches the cluster placement, and why.
+
+#### `GenericKernel.for_arch`
+
+```python
+GenericKernel.for_arch(self, arch: str, name: Optional[str] = None) -> GenericKernel
+```
+
+This kernel, every specialization of it built for `arch`.
+
+#### `GenericKernel.placed`
+
+```python
+GenericKernel.placed(self, placement=None) -> Kernel
+```
+
+This kernel with `placement` (default: the analysis's cluster
+placement) installed: its own name (a suffix for the placement),
+traces and builds, the same body.
+
+#### `GenericKernel.preloaded`
+
+```python
+GenericKernel.preloaded(self) -> Kernel
+```
+
+This kernel with `preload` set: its own builds, the same body.
+
 ### `hk.TracedKernel`
 
 ```python
@@ -1957,7 +2152,8 @@ translation's own naming, so the two cannot disagree.
 
 ### `hk.Tensor`
 
-The annotation for a tensor parameter: `x: hk.Tensor[hk.bf16]`.
+The annotation for a tensor parameter: `x: hk.Tensor[hk.bf16]`, or
+`x: hk.Tensor[hk.T]` for a dtype the call decides (`hk.TypeVar`).
 
 `hk.Tensor[hk.bf16, "system"]` (or "device") is a *scoped* tensor: memory
 another GPU ("system") or another XCD of this GPU ("device") reads or
@@ -1974,6 +2170,36 @@ reads an engine's layout in place: vLLM's x-split K cache passed as the 5-D
 view (blocks, heads, block, head_dim / G, G), G 16 bytes of elements, or its
 flash-layout cache as a permuted 4-D view. RDNA; read by `g.stage` (any
 other op on it is refused when the kernel is translated).
+
+### `hk.TypeVar`
+
+```python
+class hk.TypeVar(name: str)
+```
+
+*New after 0.9.16*
+
+A dtype parameter: `hk.Tensor[hk.T]` (or a second one, `U = hk.TypeVar("U")`).
+
+A kernel whose tensors are annotated with one is a single definition for every dtype:
+`k(a, b, o)` reads T from the first tensor annotated with it (every tensor sharing T must
+agree), `k(a, b, o, T=hk.fp16)` sets it. Each dtype is its own specialization, traced,
+built and named (`<kernel>__Tbf16`) as a kernel written for that dtype would be. In the
+body the variable's name is the bound dtype: `hk.RT(T, 16, 64)`, `x.to(T)` (or read it
+off a tensor: `a.dtype`).
+
+### `hk.T`
+
+*New after 0.9.16*
+
+A dtype parameter: `hk.Tensor[hk.T]` (or a second one, `U = hk.TypeVar("U")`).
+
+A kernel whose tensors are annotated with one is a single definition for every dtype:
+`k(a, b, o)` reads T from the first tensor annotated with it (every tensor sharing T must
+agree), `k(a, b, o, T=hk.fp16)` sets it. Each dtype is its own specialization, traced,
+built and named (`<kernel>__Tbf16`) as a kernel written for that dtype would be. In the
+body the variable's name is the bound dtype: `hk.RT(T, 16, 64)`, `x.to(T)` (or read it
+off a tensor: `a.dtype`).
 
 ### `hk.Constexpr`
 

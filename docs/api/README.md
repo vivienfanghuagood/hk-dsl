@@ -4,7 +4,7 @@
 
 Generated from the code by `scripts/gen_api_docs.py`: every public name's signature and docstring, and what is new or changed since the hk-dsl 0.9.16 wheel on PyPI ("*New after 0.9.16*": `pip install hk-dsl==0.9.16` does not have it; no release has it yet, only a checkout of main, docs/building.md). For how the language is written, read [the language](../language.md) first. Which names are stable and which experimental: [stability](../stability.md).
 
-- [`hk`: kernels, types, values](hk.md) -- 70 entries
+- [`hk`: kernels, types, values](hk.md) -- 73 entries
 - [`hk.math`](hk.math.md) -- 23 entries
 - [`hk.arch`](hk.arch.md) -- 17 entries
 - [`hk.lds`](hk.lds.md) -- 6 entries
