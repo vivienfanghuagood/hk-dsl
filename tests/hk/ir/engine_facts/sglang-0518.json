@@ -655,6 +655,7 @@
     "use_alibi_sqrt"
    ]
   },
+  "vllm_quark": null,
   "vllm_sdpa": {
    "calls_torch_sdpa": true
   },

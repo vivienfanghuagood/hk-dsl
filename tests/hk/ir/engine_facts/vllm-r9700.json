@@ -383,6 +383,23 @@
   },
   "vllm_mxfp8": null,
   "vllm_prefill": null,
+  "vllm_quark": {
+   "apply": [
+    "self",
+    "layer",
+    "x",
+    "bias"
+   ],
+   "class_has": {
+    "self.group_size": true,
+    "self.is_symmetric": true,
+    "self.kernel": true
+   },
+   "pwal": [
+    "self",
+    "layer"
+   ]
+  },
   "vllm_sdpa": {
    "calls_torch_sdpa": true
   },

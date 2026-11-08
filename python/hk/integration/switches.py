@@ -101,6 +101,11 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "Qwen3.8-27B-GPTQ-Int4 on one R9700 in the R9700 vLLM image (TRITON_ATTN), 3 alternating "
        "starts an arm: GSM8K-200 equal, TPOT ahead at 4 and 8 concurrent requests (disjoint), "
        "level at 1 and for an 8k prompt"),
+    _R("vllm_quark", "vllm", "HK_VLLM_QUARK", False, (),
+       "AMD Quark W4A16 (int4, symmetric) linear layers on gfx1201's RDNAHybridW4A16LinearKernel: "
+       "the fp16 batches vLLM runs on Triton on hk's 4-bit forms (decode to 64 tokens, the "
+       "large-batch form above: prefill), reading vLLM's tensors in place",
+       "opt-in until measured against the >= 1.15x rule on amd/Qwen3.8-27B-Quark-AWQ-INT4-W4A16"),
     _R("vllm_gemm", "vllm", "HK_VLLM_GEMM", True, ("gfx1100", "gfx1201"),
        "unquantized linear layers by the measured route table, plus tuning at load",
        "gfx1100: greedy tokens identical to stock's, or a bf16 near-tie (history 35). "

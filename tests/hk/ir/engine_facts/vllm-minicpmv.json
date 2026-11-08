@@ -442,6 +442,23 @@
     "mm_prefix_clamp_sliding_window"
    ]
   },
+  "vllm_quark": {
+   "apply": [
+    "self",
+    "layer",
+    "x",
+    "bias"
+   ],
+   "class_has": {
+    "self.group_size": true,
+    "self.is_symmetric": true,
+    "self.kernel": true
+   },
+   "pwal": [
+    "self",
+    "layer"
+   ]
+  },
   "vllm_sdpa": {
    "calls_torch_sdpa": true
   },

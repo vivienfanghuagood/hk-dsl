@@ -39,6 +39,7 @@ A route is on by default only on the GPUs where it met the [default-on rule](tes
 | `vllm_sparse_mla` | vLLM | `HK_VLLM_SPARSE_MLA` | off | off | off | **on** |
 | `vllm_int4` | vLLM | `HK_VLLM_INT4` | **on** | **on** | off | **on** |
 | `vllm_gptq` | vLLM | `HK_VLLM_GPTQ` | **on** | **on** | off | off |
+| `vllm_quark` | vLLM | `HK_VLLM_QUARK` | opt-in | opt-in | opt-in | opt-in |
 | `vllm_gemm` | vLLM | `HK_VLLM_GEMM` | **on** | **on** | off | off |
 | `vllm_moe` | vLLM | `HK_VLLM_MOE` | **on** | **on** | off | off |
 | `vllm_moe_wna16` | vLLM | `HK_VLLM_MOE_WNA16` | **on** | **on** | off | off |
