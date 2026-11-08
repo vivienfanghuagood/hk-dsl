@@ -2,13 +2,17 @@
 
 Parameter rules, which are the whole user-facing contract:
 
-* Positional parameters are tensors. Annotate them `hk.Tensor[dtype]`.
+* Positional parameters are tensors. Annotate them `hk.Tensor[dtype]`, or
+  `hk.Tensor[hk.T]` for a dtype the call decides (GenericKernel: one
+  definition, a specialization per dtype, read from the tensors or given).
 * Keyword-only parameters are **constexpr**: they are baked into the generated
   source, so they are part of the compilation cache key, and inside the kernel
   body they are ordinary Python values. That is deliberate -- a tile extent has
   to be a compile-time constant in C++, and making them real Python values
   means `range(D // 16)` unrolls and `if KIND == "softmax"` picks a branch at
   trace time.
+* A keyword-only parameter named `warps` is the warp count, an argument per
+  call (GenericKernel) rather than `hk.kernel(warps=...)`.
 
 Specialising on a constexpr produces a different kernel, and a different
 compilation. `k.specialize(D=64)` is explicit about that; calling with a
@@ -53,8 +57,62 @@ def _const_dtype(value: Any) -> DType:
     )
 
 
+class TypeVar:
+    """A dtype parameter: `hk.Tensor[hk.T]` (or a second one, `U = hk.TypeVar("U")`).
+
+    A kernel whose tensors are annotated with one is a single definition for every dtype:
+    `k(a, b, o)` reads T from the first tensor annotated with it (every tensor sharing T must
+    agree), `k(a, b, o, T=hk.fp16)` sets it. Each dtype is its own specialization, traced,
+    built and named (`<kernel>__Tbf16`) as a kernel written for that dtype would be. In the
+    body the variable's name is the bound dtype: `hk.RT(T, 16, 64)`, `x.to(T)` (or read it
+    off a tensor: `a.dtype`)."""
+
+    __slots__ = ("name",)
+
+    def __init__(self, name: str):
+        if not (isinstance(name, str) and name.isidentifier()) or name == "warps":
+            raise TypeError(f"hk.TypeVar(name): a Python identifier other than 'warps', got {name!r}")
+        self.name = name
+
+    def __repr__(self) -> str:
+        return "hk.T" if self.name == "T" else f"hk.TypeVar({self.name!r})"
+
+
+#: The dtype parameter most kernels need: `def k(a: hk.Tensor[hk.T], o: hk.Tensor[hk.T])`.
+T = TypeVar("T")
+
+
+class GenericGlobal:
+    """`hk.Tensor[hk.T, ...]`: a tensor whose dtype is a kernel's dtype parameter. A
+    specialization binds it to a GlobalType."""
+
+    __slots__ = ("var", "scope", "strided")
+
+    def __init__(self, var: TypeVar, scope: str = "", strided: bool = False):
+        self.var, self.scope, self.strided = var, scope, strided
+
+    @property
+    def dtype(self) -> TypeVar:
+        return self.var
+
+    def bind(self, dtype: DType) -> GlobalType:
+        return GlobalType(dtype, self.scope, self.strided)
+
+    def __eq__(self, other) -> bool:
+        return (isinstance(other, GenericGlobal) and other.var is self.var
+                and (other.scope, other.strided) == (self.scope, self.strided))
+
+    def __hash__(self) -> int:
+        return hash((id(self.var), self.scope, self.strided))
+
+    def __repr__(self) -> str:
+        opts = "".join(f", {o!r}" for o in (self.scope, "strided" if self.strided else "") if o)
+        return f"hk.Tensor[{self.var!r}{opts}]"
+
+
 class Tensor:
-    """The annotation for a tensor parameter: `x: hk.Tensor[hk.bf16]`.
+    """The annotation for a tensor parameter: `x: hk.Tensor[hk.bf16]`, or
+    `x: hk.Tensor[hk.T]` for a dtype the call decides (`hk.TypeVar`).
 
     `hk.Tensor[hk.bf16, "system"]` (or "device") is a *scoped* tensor: memory
     another GPU ("system") or another XCD of this GPU ("device") reads or
@@ -72,10 +130,10 @@ class Tensor:
     flash-layout cache as a permuted 4-D view. RDNA; read by `g.stage` (any
     other op on it is refused when the kernel is translated)."""
 
-    def __class_getitem__(cls, spec) -> GlobalType:
+    def __class_getitem__(cls, spec):
         dtype, *opts = (spec if isinstance(spec, tuple) else (spec,))
-        if not isinstance(dtype, DType):
-            raise TypeError(f"hk.Tensor[...] takes a dtype, got {dtype!r}")
+        if not isinstance(dtype, (DType, TypeVar)):
+            raise TypeError(f"hk.Tensor[...] takes a dtype or a dtype parameter (hk.T), got {dtype!r}")
         scope, strided = "", False
         for o in opts:
             if o == "strided" and not strided:
@@ -88,6 +146,8 @@ class Tensor:
         if strided and scope:
             raise TypeError("hk.Tensor[dtype, scope, \"strided\"]: a scoped tensor is not strided "
                             "(its accesses carry the scope through ops that address a gl)")
+        if isinstance(dtype, TypeVar):
+            return GenericGlobal(dtype, scope, strided)
         return GlobalType(dtype, scope, strided)
 
 
@@ -312,6 +372,10 @@ class Kernel:
         placement=None,
     ):
         self.fn = fn
+        #: A specialization of a kernel with dtype parameters (GenericKernel.variant): each
+        #: hk.TypeVar's name -> its dtype. The tensors annotated with it get that dtype, and the
+        #: body sees the dtype under the variable's name. Set by _with_bind before __init__.
+        self._bind: Dict[str, DType] = dict(self.__dict__.get("_bind") or {})
         #: Preprocessor definitions ahead of the includes, for this kernel's
         #: build only -- a library knob such as HK_BF16_ROUND. Part of the
         #: source, so the compile cache keys on them.
@@ -322,6 +386,10 @@ class Kernel:
         self._arch = arch
         self.warps = warps
         self.grid_fn = grid
+        self.signature = inspect.signature(fn)
+        #: A keyword-only parameter named `warps` (GenericKernel): the body takes the warp
+        #: count as that argument. Its default, or None when the kernel has no such parameter.
+        self._warps_param: Optional[int] = None
         self.name = name or _default_name(fn, warps)
         #: True when the name was made here rather than passed: hk.specialize may rename it.
         self._auto_name = name is None
@@ -365,8 +433,14 @@ class Kernel:
         self.placement = placement
         self._placed: Optional["Kernel"] = None
         self._choices: Dict[Tuple, Any] = {}
-        self.signature = inspect.signature(fn)
         self._tensors, self._defaults = self._split_params()
+        #: Each dtype parameter the tensors name, in order -> the index of the first tensor
+        #: annotated with it (where a call reads it). Empty for a kernel with none, and for a
+        #: specialization (its tensors are bound).
+        self._typevars: Dict[str, int] = {}
+        for i, (_, ty) in enumerate(self._tensors):
+            if isinstance(ty, GenericGlobal):
+                self._typevars.setdefault(ty.var.name, i)
         self._ir_cache: Dict[Tuple, TracedKernel] = {}
         self._build_cache: Dict[Tuple, Any] = {}
         self._mod_cache: Dict[Tuple, Any] = {}
@@ -430,6 +504,14 @@ class Kernel:
             if p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
                 raise TypeError(f"{self.name}: *args / **kwargs are not supported")
             keyword_only = p.kind is inspect.Parameter.KEYWORD_ONLY
+            if keyword_only and p.name == "warps":
+                # The warp count as an argument: not baked as a constexpr (the workgroup's
+                # size is the launch's), passed to the body as the kernel's `warps`.
+                if not isinstance(p.default, int) or isinstance(p.default, bool) or p.default < 1:
+                    raise TypeError(f"{self.name}: the keyword-only parameter `warps` is the warp "
+                                    f"count and needs a positive int default, got {p.default!r}")
+                self._warps_param = p.default
+                continue
             ann = None if keyword_only else self._annotation(p)
             if keyword_only or ann is Constexpr:
                 if p.default is inspect.Parameter.empty:
@@ -440,7 +522,9 @@ class Kernel:
                     )
                 consts[p.name] = p.default
                 continue
-            if not isinstance(ann, GlobalType):
+            if isinstance(ann, GenericGlobal) and ann.var.name in self._bind:
+                ann = ann.bind(self._bind[ann.var.name])
+            if not isinstance(ann, (GlobalType, GenericGlobal)):
                 raise TypeError(
                     f"{self.name}: parameter {p.name!r} must be annotated "
                     f"hk.Tensor[dtype] (got {ann!r}). Positional parameters are "
@@ -473,9 +557,12 @@ class Kernel:
         got = self._ir_cache.get(key)
         if got is not None:
             return got
+        if self._typevars:
+            raise TypeError(f"{self.name}: its dtype parameter(s) {sorted(self._typevars)} are unbound")
         arch = self.arch
         t = B.Trace(self.name, arch)
-        body = rewrite(self.fn)
+        body = rewrite(self.fn, self._bind or None)
+        extra = {"warps": self.warps} if self._warps_param is not None else {}
         with B.tracing(t), ir.Location.unknown():
             mod, f, entry = begin_kernel(self.name, arch, self.warps, consts,
                                          self._tensors, noalias=self.noalias)
@@ -483,7 +570,7 @@ class Kernel:
             args = {n: Global(a, ty, n)
                     for (n, ty), a in zip(self._tensors, entry.arguments)}
             with t.at(ir.InsertionPoint(entry)):
-                body(**args, **consts)
+                body(**args, **consts, **extra)
                 func_d.ReturnOp([], loc=ir.Location.unknown())
             grid = self._trace_grid(consts)
             build_grid(mod, self.name, self._tensors, grid)
@@ -515,7 +602,10 @@ class Kernel:
                 f"p.<tensor>.<batch|depth|rows|cols> gives an extent and "
                 f"p.<CONSTEXPR> gives a constexpr value."
             )
-        ref = host.ParamRef([n for n, _ in self._tensors], consts)
+        # `p.warps` is the warp count (the launch's, or the `warps` argument's), and a dtype
+        # parameter's name its dtype, next to the constexprs.
+        seen = {**self._bind, **({} if "warps" in consts else {"warps": self.warps}), **consts}
+        ref = host.ParamRef([n for n, _ in self._tensors], seen)
         dims = self.grid_fn(ref)
         if not isinstance(dims, tuple) or len(dims) != 3:
             raise TypeError(
@@ -606,7 +696,7 @@ class Kernel:
         if self.preload:
             return self
         if self._preloaded is None:
-            self._preloaded = type(self)(
+            self._preloaded = _with_bind(type(self), self._bind,
                 self.fn, arch=self._arch, warps=self.warps, grid=self.grid_fn,
                 name=self.name, max_vgprs=self.max_vgprs,
                 min_occupancy=self.min_occupancy, max_occupancy=self.max_occupancy, defines=self.defines,
@@ -695,6 +785,21 @@ class Kernel:
 
         return checked
 
+    def for_arch(self, arch: str, name: Optional[str] = None) -> "Kernel":
+        """This kernel built for `arch`: the same body, warps, grid, constexpr defaults and
+        options (a specialization keeps its dtypes), its own traces and builds. `name=` renames
+        it. What a test or a probe that targets another arch wants, in place of re-wrapping
+        `k.fn` (which a dtype-parameter specialization cannot be)."""
+        k = _with_bind(
+            type(self), self._bind,
+            self.fn, arch=arch, warps=self.warps, grid=self.grid_fn,
+            name=name or self.name, max_vgprs=self.max_vgprs,
+            min_occupancy=self.min_occupancy, max_occupancy=self.max_occupancy, defines=self.defines,
+            noalias=self.noalias, preload=self.preload, resident=self.resident,
+            placement=self.placement)
+        k._defaults = dict(self._defaults)
+        return k
+
     def placed(self, placement=None) -> "Kernel":
         """This kernel with `placement` (default: the analysis's cluster
         placement) installed: its own name (a suffix for the placement),
@@ -704,7 +809,8 @@ class Kernel:
         pl = placement or P.Placement.cluster()
         if placement is None and self._placed is not None:
             return self._placed
-        k = type(self)(
+        k = _with_bind(
+            type(self), self._bind,
             self.fn, arch=self._arch, warps=self.warps, grid=self.grid_fn,
             name=self.name + pl.suffix(P.xcd_count(self.arch)), max_vgprs=self.max_vgprs,
             min_occupancy=self.min_occupancy, max_occupancy=self.max_occupancy, defines=self.defines, noalias=self.noalias,
@@ -849,7 +955,8 @@ class Kernel:
         """
         key = self._key(self._resolve_consts(const_overrides))
         if key not in self._spec_cache:
-            k = type(self)(
+            k = _with_bind(
+                type(self), self._bind,
                 self.fn, arch=self._arch, warps=self.warps, grid=self.grid_fn,
                 name=self.name, max_vgprs=self.max_vgprs,
                 min_occupancy=self.min_occupancy, max_occupancy=self.max_occupancy, defines=self.defines,
@@ -868,6 +975,265 @@ class Kernel:
 
     def __repr__(self) -> str:
         return f"<hk.Kernel {self.name} arch={self.arch} warps={self.warps}>"
+
+
+def _with_bind(cls, bind: Dict[str, DType], *args: Any, **kw: Any) -> "Kernel":
+    """`cls(*args, **kw)` with its dtype parameters bound (Kernel._bind) before __init__ reads
+    its annotations: a specialization of a GenericKernel, or a copy of one."""
+    k = cls.__new__(cls)
+    k._bind = dict(bind)
+    k.__init__(*args, **kw)
+    return k
+
+
+_TORCH_TO_HK: Dict[Any, DType] = {}
+
+
+def _hk_dtype(torch_dtype) -> Optional[DType]:
+    """The hk DType of a torch dtype, or None."""
+    if not _TORCH_TO_HK:
+        import torch  # noqa: PLC0415
+
+        from ..types import DTYPES  # noqa: PLC0415
+
+        for hk_name, t_name in (("bf16", "bfloat16"), ("fp16", "float16"), ("fp32", "float32"),
+                                ("i32", "int32"), ("i8", "int8"), ("fp8e4m3", "float8_e4m3fn"),
+                                ("fp8e5m2", "float8_e5m2")):
+            if hasattr(torch, t_name):
+                _TORCH_TO_HK[getattr(torch, t_name)] = DTYPES[hk_name]
+    return _TORCH_TO_HK.get(torch_dtype)
+
+
+class GenericKernel(Kernel):
+    """A kernel with dtype parameters (`hk.Tensor[hk.T]`) and/or a `warps` argument: one
+    definition, a specialization per (dtypes, warps) -- an ordinary Kernel, traced, built and
+    named `<kernel>__T<dtype>_warps<n>` -- picked at the call.
+
+        @hk.kernel(grid=lambda p: (hk.cdiv(p.o.cols, 64 * p.warps), hk.cdiv(p.o.rows, 16), 1))
+        def gated_silu(a: hk.Tensor[hk.T], b: hk.Tensor[hk.T], o: hk.Tensor[hk.T], *, warps=4):
+            ...
+        gated_silu(a, b, o)                  # T read from the tensors (they must agree); 4 warps
+        gated_silu(a16, b16, o16, warps=8)   # T = fp16; 8 warps
+        gated_silu(a, b, o, T=hk.bf16)       # T given: nothing read
+        gated_silu.variant(T=hk.fp16)        # the specialization itself: gated_silu__Tfp16_warps4
+
+    trace / source / build / compile / specialize take the same keywords (`T=` is required
+    there: no tensors to read it from)."""
+
+    def __init__(self, fn: Callable, **kw: Any):
+        super().__init__(fn, **kw)
+        if self._warps_param is not None:
+            self.warps = self._warps_param
+        if self._auto_name:     # a factory-made generic kernel: no warps token in its base name
+            self.name = self.__name__ = self.__qualname__ = _default_name(fn, None)
+        self._variants: Dict[Tuple, Kernel] = {}
+        #: kwargs as passed -> _entry(): the tensors to read dtypes from, and the launches.
+        self._dispatch: Dict[Tuple, list] = {}
+        self._nokw = self._entry({})
+        code = getattr(fn, "__code__", None)
+        for v in self._typevars:
+            g = getattr(fn, "__globals__", {}).get(v)
+            if code is not None and v in code.co_names and g is not None and not isinstance(g, TypeVar):
+                raise TypeError(
+                    f"{self.name}: the body names `{v}`, which is its dtype parameter there, but "
+                    f"the module also defines a global `{v}` ({g!r}) that the body would then not "
+                    f"see. Rename the global, or read the dtype off a tensor (`a.dtype`).")
+
+    # -- specializations ---------------------------------------------------------
+
+    def _split(self, kw: Dict[str, Any], tensors=None) -> Tuple[Tuple, Dict[str, Any]]:
+        """(the specialization's key: each dtype parameter's dtype, then warps), and the
+        remaining kwargs (constexprs). A dtype not in `kw` is read off `tensors`."""
+        rest = dict(kw)
+        key = []
+        for v, i in self._typevars.items():
+            dt = rest.pop(v, None)
+            if dt is None:
+                if tensors is None:
+                    raise TypeError(
+                        f"{self.name}: its dtype parameter {v} is read from the tensors at a "
+                        f"call; here there are none, so pass it: {v}=hk.bf16")
+                dt = self._infer(v, tensors)
+            if not isinstance(dt, DType):
+                raise TypeError(f"{self.name}: {v}= takes an hk dtype (hk.bf16, ...), got {dt!r}")
+            key.append(dt)
+        if self._warps_param is not None:
+            w = rest.pop("warps", self._warps_param)
+            if not isinstance(w, int) or isinstance(w, bool) or w < 1:
+                raise TypeError(f"{self.name}: warps= takes a positive int, got {w!r}")
+            key.append(w)
+        return tuple(key), rest
+
+    def _infer(self, v: str, tensors) -> DType:
+        names = [n for n, _ in self._tensors]
+        sharing = [(names[i], t) for i, ((_, ty), t) in enumerate(zip(self._tensors, tensors))
+                   if isinstance(ty, GenericGlobal) and ty.var.name == v]
+        got = {}
+        for n, t in sharing:
+            tdt = getattr(t, "dtype", None)
+            dt = _hk_dtype(tdt)
+            if dt is None:
+                raise TypeError(f"{self.name}: tensor {n!r} is {tdt}, which is no hk dtype; "
+                                f"its dtype parameter {v} cannot be read from it")
+            got.setdefault(dt.name, []).append(n)
+        if len(got) > 1:
+            raise TypeError(f"{self.name}: the tensors annotated hk.Tensor[{v}] disagree on {v}: "
+                            + "; ".join(f"{d}: {', '.join(ns)}" for d, ns in got.items()))
+        return _hk_dtype(getattr(sharing[0][1], "dtype", None))
+
+    def variant(self, **kw: Any) -> Kernel:
+        """The specialization for these dtype parameters (and `warps=`): an ordinary Kernel,
+        named `<kernel>__T<dtype>[_warps<n>]`. Other keywords are not taken here."""
+        key, rest = self._split(kw)
+        if rest:
+            raise TypeError(f"{self.name}.variant() takes the dtype parameters and warps only; "
+                            f"got {sorted(rest)} (pass constexprs to the call, or specialize())")
+        return self._variant(key)
+
+    def _variant(self, key: Tuple) -> Kernel:
+        k = self._variants.get(key)
+        if k is None:
+            names = list(self._typevars)
+            bind = dict(zip(names, key))
+            warps = key[len(names)] if self._warps_param is not None else self.warps
+            pairs = list(bind.items()) + ([("warps", warps)] if self._warps_param is not None else [])
+            k = _with_bind(Kernel, bind, self.fn, arch=self._arch, warps=warps, grid=self.grid_fn,
+                           name=_clip(f"{self.name}__{_tokens(pairs)}"), max_vgprs=self.max_vgprs,
+                           min_occupancy=self.min_occupancy, max_occupancy=self.max_occupancy,
+                           defines=self.defines, noalias=self.noalias, preload=self.preload,
+                           resident=self.resident, placement=self.placement)
+            k._defaults = dict(self._defaults)
+            self._variants[key] = k
+        return k
+
+    def _for(self, kw: Dict[str, Any]) -> Tuple[Kernel, Dict[str, Any]]:
+        key, rest = self._split(kw)
+        return self._variant(key), rest
+
+    # -- the Kernel surface, on a specialization -------------------------------------------
+
+    def trace(self, **kw: Any) -> TracedKernel:
+        k, rest = self._for(kw)
+        return k.trace(**rest)
+
+    def source(self, scaffold: str = "pybind", **kw: Any) -> str:
+        k, rest = self._for(kw)
+        return k.source(scaffold, **rest)
+
+    def build(self, **kw: Any):
+        k, rest = self._for(kw)
+        return k.build(**rest)
+
+    def compile(self, **kw: Any):
+        k, rest = self._for(kw)
+        return k.compile(**rest)
+
+    def resident_capacity(self, **kw: Any) -> int:
+        k, rest = self._for(kw)
+        return k.resident_capacity(**rest)
+
+    def specialize(self, **kw: Any) -> Kernel:
+        """The specialization for the dtype parameters and warps given, with the other
+        keywords as its constexpr defaults."""
+        k, rest = self._for(kw)
+        return k.specialize(**rest) if rest else k
+
+    def placement_choice(self, *tensors: Any, **kw: Any):
+        key, rest = self._split(kw, tensors)
+        return self._variant(key).placement_choice(*tensors, **rest)
+
+    def for_arch(self, arch: str, name: Optional[str] = None) -> "GenericKernel":
+        """This kernel, every specialization of it built for `arch`."""
+        k = GenericKernel(self.fn, arch=arch, warps=1 if self._warps_param is not None else self.warps,
+                          grid=self.grid_fn, name=name or self.name, max_vgprs=self.max_vgprs,
+                          min_occupancy=self.min_occupancy, max_occupancy=self.max_occupancy,
+                          defines=self.defines, noalias=self.noalias, preload=self.preload,
+                          resident=self.resident, placement=self.placement)
+        k._defaults = dict(self._defaults)
+        return k
+
+    def placed(self, placement=None) -> "Kernel":
+        raise TypeError(f"{self.name}: placed() is per specialization: "
+                        f"{self.name}.variant(T=...).placed()")
+
+    def preloaded(self) -> "Kernel":
+        raise TypeError(f"{self.name}: preloaded() is per specialization: "
+                        f"{self.name}.variant(T=...).preloaded()")
+
+    # -- launch ------------------------------------------------------------------
+
+    def __call__(self, *tensors: Any, **kw: Any):
+        """Launch the specialization the call picks. The fast path: one dict probe on the
+        kwargs as passed (none: skipped), the dtypes of the tensors annotated with a dtype
+        parameter they do not give (one compiled read), one dict probe on those."""
+        if _RECORDING is None and not _symmetric._RANGES:
+            try:
+                read, launches = self._dispatch[tuple(kw.items())] if kw else self._nokw
+                launch = launches if read is None else launches.get(read(tensors))
+            except (KeyError, TypeError, IndexError, AttributeError):
+                launch = None
+            if launch is None:
+                launch = self._bind_launch(tensors, kw)
+            if launch is not None:
+                return launch(*tensors)
+        dkey, rest = self._split(kw, tensors)
+        return self._variant(dkey)(*tensors, **rest)
+
+    def _entry(self, kw: Dict[str, Any]) -> list:
+        """[a function of the call's tensors giving the dtypes it reads (None: none), the launch
+        (none read) or a dict from what it gives to the launch].
+
+        Every tensor annotated with an inferred parameter is read, not only the first: the
+        launcher does not check dtypes, so a call whose tensors disagree must miss this cache
+        and reach the check that names them. A parameter given in the call is not read. The
+        reader is compiled for its indices (`lambda t: (t[0].dtype, t[2].dtype)`): a generator
+        over them costs more than the rest of the launch path together."""
+        idx = [i for i, (_, ty) in enumerate(self._tensors)
+               if isinstance(ty, GenericGlobal) and ty.var.name not in kw]
+        if not idx:
+            return [None, None]
+        body = f"t[{idx[0]}].dtype" if len(idx) == 1 else \
+            "(" + ", ".join(f"t[{i}].dtype" for i in idx) + ")"
+        return [eval(f"lambda t: {body}"), {}]   # noqa: S307 -- built from ints above
+
+    def _bind_launch(self, tensors, kw) -> Optional[Callable]:
+        if len(tensors) != len(self._tensors):
+            return None                         # the slow path says what is wrong
+        dkey, rest = self._split(kw, tensors)
+        k = self._variant(dkey)
+        if k.placement == "auto":
+            def launch(*ts, _k=k, _rest=rest):
+                return _k(*ts, **_rest)
+        else:
+            launch = k._launcher(**rest)
+        try:
+            ent = self._dispatch.get(tuple(kw.items())) if kw else self._nokw
+            if ent is None:
+                ent = self._dispatch[tuple(kw.items())] = self._entry(kw)
+        except TypeError:                       # an unhashable constexpr: not cached
+            return launch
+        if ent[0] is None:
+            ent[1] = launch
+        else:
+            ent[1][ent[0](tensors)] = launch
+        return launch
+
+    def __repr__(self) -> str:
+        tv = ", ".join(self._typevars)
+        w = f" warps={self.warps} (argument)" if self._warps_param is not None else f" warps={self.warps}"
+        return f"<hk.Kernel {self.name}[{tv}] arch={self._arch or 'current'}{w}>"
+
+
+def _make_kernel(f, **kw) -> Kernel:
+    """Kernel, or GenericKernel for a body with dtype parameters or a `warps` argument."""
+    sig = inspect.signature(f)
+    generic = "warps" in sig.parameters and \
+        sig.parameters["warps"].kind is inspect.Parameter.KEYWORD_ONLY
+    if not generic:
+        probe = Kernel(f, **kw)
+        if not probe._typevars:
+            return probe
+    return GenericKernel(f, **kw)
 
 
 # -- names ----------------------------------------------------------------------------------
@@ -971,7 +1337,8 @@ def _default_name(fn, warps: int = 1) -> str:
     pairs = []
     for n, c in zip(code.co_freevars, getattr(fn, "__closure__", None) or ()):
         try:
-            pairs.append((n, c.cell_contents))
+            if not isinstance(c.cell_contents, TypeVar):   # a dtype parameter: the variant names it
+                pairs.append((n, c.cell_contents))
         except ValueError:
             pass
     if not pairs:
@@ -986,12 +1353,13 @@ def _default_name(fn, warps: int = 1) -> str:
                 seen.append(dt.name)
         if seen:
             pairs.append(("T", "_".join(seen)))
-    pairs.append(("warps", warps))
+    if warps is not None:
+        pairs.append(("warps", warps))
     toks = _tokens(pairs)
     return _clip(f"{head}__{toks}")
 
 
-def kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None,
+def kernel(fn=None, *, arch: Optional[str] = None, warps: Optional[int] = None, grid=None,
            name: Optional[str] = None, max_vgprs: Optional[int] = None,
            min_occupancy: Optional[int] = None, max_occupancy: Optional[int] = None,
            defines: Optional[Dict[str, Any]] = None, noalias: bool = False,
@@ -1004,11 +1372,15 @@ def kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None,
     (hk.dsl.placement, docs/design/placement-pass.md)."""
 
     def wrap(f):
-        return Kernel(f, arch=arch, warps=warps, grid=grid, name=name,
-                      max_vgprs=max_vgprs, min_occupancy=min_occupancy,
-                      max_occupancy=max_occupancy,
-                      defines=defines, noalias=noalias, preload=preload,
-                      resident=resident, placement=placement)
+        p = inspect.signature(f).parameters.get("warps")
+        if warps is not None and p is not None and p.kind is inspect.Parameter.KEYWORD_ONLY:
+            raise TypeError(f"{name or f.__name__}: the warp count is its `warps` argument "
+                            f"(default {p.default!r}); hk.kernel(warps={warps}) would say it twice")
+        return _make_kernel(f, arch=arch, warps=1 if warps is None else warps, grid=grid, name=name,
+                            max_vgprs=max_vgprs, min_occupancy=min_occupancy,
+                            max_occupancy=max_occupancy,
+                            defines=defines, noalias=noalias, preload=preload,
+                            resident=resident, placement=placement)
 
     return wrap(fn) if fn is not None else wrap
 
@@ -1063,5 +1435,5 @@ def specialize(factory):
     return build
 
 
-__all__ = ["kernel", "func", "specialize", "Kernel", "TracedKernel", "Tensor", "Constexpr",
-           "verify_error"]
+__all__ = ["kernel", "func", "specialize", "Kernel", "GenericKernel", "TracedKernel", "Tensor",
+           "Constexpr", "TypeVar", "T", "verify_error"]

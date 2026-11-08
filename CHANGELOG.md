@@ -8,6 +8,42 @@ The next version's notes collect here until it is released.
 
 **SGLang-Diffusion: `sgld_qknorm` on SGLang 0.5.23.** 0.5.23 rewrote Qwen-Image 2.1's `apply_qk_norm_rope`; off CUDA it still falls back to the norm then `apply_rope`, now spelled `apply_rope(norm(x), rope)`. The route's engine contract looked for the old spelling only and turned the route off there; it now reads both.
 
+## 0.9.17
+
+hk-dsl 0.9.17: one `@hk.kernel` definition serves every dtype and warp count -- a tensor annotated
+`hk.Tensor[hk.T]` takes its dtype from the call, and `warps` is an ordinary keyword argument; the public
+scorecard gains its Radeon section. No change to the dialect (`hk-dialect-8`) or which routes are on by default.
+
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels below are the same files.
+
+    pip install hk_dsl-0.9.17-cp312-cp312-manylinux_2_35_x86_64.whl
+
+### Changes
+
+**One kernel for every dtype and warp count** (#345). A tensor annotated `hk.Tensor[hk.T]` takes its
+dtype from the call -- read from the first tensor annotated with it (every tensor sharing it must
+agree), or given as `T=hk.fp16` -- and a keyword-only parameter named `warps` makes the warp count a
+per-call argument (`k(a, b, o, warps=8)`; the grid reads it as `p.warps`). Each (dtype, warps) is
+its own specialization, traced, built and named as before (`silu_mul__Tbf16_warps4`); its C++ is
+the factory version's but for the name. `hk.TypeVar("U")` adds a second dtype parameter;
+`k.variant(T=..., warps=...)` is a specialization, and `trace` / `source` / `build` / `specialize`
+take the same keywords. Old annotations, factories, `@hk.specialize` and `hk.kernel(warps=)` keep
+their meaning. `hk.ops` builds `fused.silu_mul_kernel`, `quant.quantize_kernel` and
+`quant.dequantize_kernel` this way (their tables now hold the specializations, under new kernel
+names: one recompile each). docs/language.md, "One kernel for every dtype and warp count".
+
+**Documentation** (#343, #344). The scorecard's Radeon section: end-to-end serving on a W7900D and an R9700, same-process A/B against a fair stock. docs/sglang.md: the `sgld_ditnorm` row.
+
+### How this release was verified
+
+The MI355X CI cards were held by another user's workload, so the gfx950 and gfx950-vllm GPU tiers did not run on #345 or this release (the gfx942/gfx950 codegen builds in CI did), and the MI355X wheel smokes did not run; CI and the gfx1100 and gfx1201 GPU tiers did (a2, 2026-11-08). #345's launch overhead was measured on an MI355X (under 0.3 µs over a plain kernel).
+
+### All pull requests
+
+#342, #343, #344, #345.
+
 ## 0.9.16
 
 hk-dsl 0.9.16: on gfx1100, AMD Quark W4A16 checkpoints run on hk's 4-bit forms by default (`vllm_quark`,

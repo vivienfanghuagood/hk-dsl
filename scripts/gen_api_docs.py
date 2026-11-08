@@ -11,10 +11,10 @@ Needs hk._mlir (the language imports it), not a GPU, hipcc or torch.
 tests/hk/ir/test_api_docs.py runs `--check`, so a change to a public
 signature or docstring that is not regenerated fails the IR tier.
 
-"New after 0.9.16" marks come from scripts/api_baseline_0.9.16.json: every
-module-level name, function parameter and class method of the hk-dsl 0.9.16
+"New after 0.9.17" marks come from scripts/api_baseline_0.9.17.json: every
+module-level name, function parameter and class method of the hk-dsl 0.9.17
 wheel on PyPI, read from its sources with `ast` (`--baseline`, after
-`pip download hk-dsl==0.9.16 --no-deps` and unzipping it). A name the wheel
+`pip download hk-dsl==0.9.17 --no-deps` and unzipping it). A name the wheel
 does not have is new; a function whose parameters differ is changed. What a
 signature cannot show is in BEHAVIOUR below, by hand.
 
@@ -46,8 +46,8 @@ sys.path.insert(0, str(REPO / "python"))
 os.environ["HK_ARCH"] = "gfx1100"
 
 OUT = REPO / "docs" / "api"
-BASELINE = REPO / "scripts" / "api_baseline_0.9.16.json"
-PYPI = "0.9.16"
+BASELINE = REPO / "scripts" / "api_baseline_0.9.17.json"
+PYPI = "0.9.17"
 #: The release these docs ship in: what has every "New after" name. None
 #: between releases: then only a checkout of main has them.
 RELEASE: Optional[str] = None
@@ -524,7 +524,8 @@ def page_hk(since: Since) -> Page:
              "[hk.profile](hk.profile.md), the per-arch facts "
              "[hk.target](hk.target.md).")
     groups = [
-        ("Kernels", ["kernel", "func", "Kernel", "TracedKernel", "Tensor", "Constexpr"]),
+        ("Kernels", ["kernel", "func", "Kernel", "GenericKernel", "TracedKernel", "Tensor", "TypeVar",
+                     "T", "Constexpr"]),
         ("Types", ["RT", "RS", "ST", "SV", "col_vec", "row_vec", "DType"]),
         ("Control flow", ["range", "range_constexpr", "if_", "scope", "uniform"]),
         ("Functions", ["cdiv", "min", "max", "zeros", "full", "neg_infty", "rand",
@@ -543,8 +544,10 @@ def page_hk(since: Since) -> Page:
             documented.add(n)
             p.entry(f"hk.{n}", obj, display=f"hk.{n}",
                     mark=_mark(since, "hk", n, obj, f"hk.{n}"))
-            if inspect.isclass(obj) and n in ("Kernel", "TracedKernel"):
+            if inspect.isclass(obj) and n in ("Kernel", "GenericKernel", "TracedKernel"):
                 for mn, mv, _ in members(obj):
+                    if n == "GenericKernel" and mn not in vars(obj):
+                        continue        # inherited: documented under hk.Kernel
                     p.entry(f"hk.{n}.{mn}", mv, display=f"{n}.{mn}", level=4,
                             mark=since.mark("hk.dsl.kernel", mn, mv, cls=n),
                             signature=not isinstance(mv, property))

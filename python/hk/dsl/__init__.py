@@ -32,7 +32,8 @@ from . import maps as _maps
 from . import arch, collective, comm, lds, math, placement  # noqa: F401
 from .control import if_, range, range_constexpr, scope, uniform  # noqa: A004
 from .group import Group, group
-from .kernel import Constexpr, Kernel, TracedKernel, Tensor, func, kernel, specialize
+from .kernel import (Constexpr, GenericKernel, Kernel, T, Tensor, TracedKernel, TypeVar, func,
+                     kernel, specialize)
 from .placement import Digit, Placement
 from .values import (  # noqa: F401
     Bool, Coord, Global, Granules, Int, MxScales, RowIndex, Scaled, SharedTile, SharedVec, Tile, Value,
@@ -158,7 +159,8 @@ def where(m, a, b):
 
 
 __all__ = [
-    "kernel", "func", "specialize", "Kernel", "TracedKernel", "Tensor", "Constexpr",
+    "kernel", "func", "specialize", "Kernel", "GenericKernel", "TracedKernel", "Tensor", "Constexpr",
+    "TypeVar", "T",
     "RT", "RS", "ST", "SV", "col_vec", "row_vec", "DType",
     "bf16", "fp16", "fp32", "i32", "i8", "fp8e4m3", "fp8e5m2",
     "arch", "lds", "math", "collective", "comm", "placement", "Placement", "Digit", "group",

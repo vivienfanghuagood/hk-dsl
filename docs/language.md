@@ -79,8 +79,8 @@ throughout. A kernel that converts in registers and must match torch bit
 for bit -- a residual `x + r` of two bf16 values, which is a tie about one
 time in ten -- sets it. The grid is a
 function of the parameters: `p.<tensor>.<batch|depth|rows|cols>` gives an
-extent and `p.<CONSTEXPR>` gives a constexpr value, and it must return a
-3-tuple. A kernel that names no `arch` is built for `hk.target.current_arch()`
+extent, `p.<CONSTEXPR>` gives a constexpr value and `p.warps` the warp count,
+and it must return a 3-tuple. A kernel that names no `arch` is built for `hk.target.current_arch()`
 (see [runtime](runtime.md#which-gpu)). `max_vgprs` and `min_occupancy` are
 extra build gates on top of the unconditional no-spill rule
 ([resource gates](runtime.md#the-resource-gates)). `max_occupancy=N` is not a
@@ -115,10 +115,61 @@ a configured kernel to something that will call it many times.
 A tensor with fewer than four dimensions fills the trailing ones, so a 2-D
 tensor is `(rows, cols)` (`include/pyutils/hk_bind.cuh`).
 
+### One kernel for every dtype and warp count
+
+A tensor annotated with a *dtype parameter*, `hk.Tensor[hk.T]`, takes its dtype
+from the call, and a keyword-only parameter named `warps` makes the warp count
+an argument. One definition then covers every dtype and warp count:
+
+```python
+@hk.kernel(grid=lambda p: (hk.cdiv(p.o.cols, 64 * p.warps), hk.cdiv(p.o.rows, 16), 1))
+def gated_silu(a: hk.Tensor[hk.T], b: hk.Tensor[hk.T], o: hk.Tensor[hk.T], *, warps=4):
+    col = (hk.arch.block_idx.x * warps + hk.arch.warp_id()) * 64
+    idx = hk.elem_coord(0, 0, hk.arch.block_idx.y * 16, col)
+    t = hk.RT(hk.fp32, 16, 64)              # the load converts; silu is fp32
+    g = a[idx].load(t)
+    g.silu(into=g)
+    o[idx] = (g * b[idx].load(t)).to(o.dtype)
+```
+
+```python
+gated_silu(a, b, o)                 # T read from `a`: bf16 tensors, a bf16 kernel; 4 warps
+gated_silu(a16, b16, o16, warps=8)  # fp16, 8 warps
+gated_silu(a, b, o, T=hk.bf16)      # T given: nothing is read
+```
+
+- **T is inferred** from the first tensor annotated with it, and every tensor
+  sharing it must agree (a call with a bf16 `a` and an fp16 `b` is refused,
+  naming both). `T=hk.fp16` in the call sets it instead, and the call then reads
+  no dtype. A second parameter is `U = hk.TypeVar("U")`: `hk.Tensor[U]`.
+- **In the body** the dtype is a tensor's `.dtype` (`o.dtype` above), or the
+  parameter's own name: `T` is the bound `hk.DType` in a kernel that imports it
+  (`from hk import T`; `hk.RT(T, 16, 64)`, `x.to(T)`). A module that also defines
+  some other global `T` -- a tile, say -- is told so when the kernel is made.
+- **`warps`** is the workgroup's warp count, per call (`warps=8`), with the
+  parameter's default otherwise; in the body it is a plain int, in the grid
+  `p.warps`. `hk.kernel(warps=...)` is then not also given. (`p.warps` reads any
+  kernel's warp count.)
+- **Each (dtypes, warps) is its own kernel**, traced, built and cached as if
+  written for that dtype -- the generated C++ is the same as a factory's, but
+  for the name: `gated_silu__Tbf16_warps4`. `gated_silu.variant(T=hk.fp16,
+  warps=8)` is that kernel, for whatever takes a `hk.Kernel`; `trace`, `source`,
+  `build` and `specialize` take the same keywords (`T=` is required there:
+  there are no tensors to read it from).
+- **A launch costs what a plain kernel's does**: the call reads the `.dtype` of
+  each tensor annotated with an inferred parameter and probes one dict. On a
+  W7900D, `k(a, b, o)` is within 0.1 us of calling the specialization itself,
+  and a call with `T=` or `warps=` about 0.2 us more than a plain kernel's call
+  with a constexpr keyword (`tools/hk-bench/generic_launch.py`).
+
+`hk.ops` builds `fused.silu_mul_kernel`, `quant.quantize_kernel` and
+`quant.dequantize_kernel` this way; their tables (`fused.KERNELS[...]`) hold
+the specializations.
+
 ### Kernels made by a factory
 
-What a constexpr cannot carry -- a dtype in an annotation, `warps`, the arch,
-a Python function the body calls -- is a factory's argument: a function that
+What neither a constexpr nor a dtype parameter carries -- the arch, a Python
+function the body calls -- is a factory's argument: a function that
 defines the kernel and returns it. `@hk.specialize` makes the factory build each
 variant once and names the kernel after its arguments:
 

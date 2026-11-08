@@ -45,3 +45,14 @@ def test_silu_mul(doc):
     doc.silu_mul(dtype=hk.fp16)(a, b, o)
     ref = (torch.nn.functional.silu(a.float()) * b.float()).half()
     torch.testing.assert_close(o, ref, rtol=2e-2, atol=2e-2)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("warps", [4, 8])
+def test_gated_silu_one_kernel_every_dtype(doc, dtype, warps):
+    a = torch.randn(64, 2048, device="cuda", dtype=dtype)
+    b = torch.randn_like(a)
+    o = torch.empty_like(a)
+    doc.gated_silu(a, b, o) if warps == 4 else doc.gated_silu(a, b, o, warps=warps)
+    ref = (torch.nn.functional.silu(a.float()) * b.float()).to(dtype)
+    torch.testing.assert_close(o, ref, rtol=2e-2, atol=2e-2)

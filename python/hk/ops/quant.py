@@ -29,6 +29,7 @@ on an activation is decided by whichever row has the worst outlier, and on a
 from .. import dsl as hk
 from ..dsl.collective import cross_warp, fold_rows
 from ..dsl.values import as_vec
+from ..dsl import T
 from ..types import bf16, fp16, fp32, i8
 from .norm import (COLS, MAX_TPW, ROWS, WARP_COUNTS, _block_start, _ceil,
                    _exact, _split, _view, strip_preloads)
@@ -149,116 +150,114 @@ def plan(cols: int, working_set: int | None = None):
     return warps, 0, 1
 
 
-def _quantize_kernel(name: str, dtype, warps: int):
-    def body(x: hk.Tensor[dtype], q: hk.Tensor[i8], s: hk.Tensor[fp32], *,
-             ROWS=ROWS, COLS=COLS, WARPS=warps, TPW=0, FOLD=1, EXACT=0):
-        # The tile is fp32 even though the tensor is bf16, and holding it in
-        # bf16 instead is not an optimization on this part -- it is a
-        # pessimization, measured. See the note above `visit`.
-        t = _ftile(ROWS, COLS, FOLD)
-        vt = hk.col_vec(t)
-        ncols = x.cols
-        nblk = hk.cdiv(ncols, COLS)
-        row_lo, _ = _block_start(hk.arch.block_idx.y, ROWS, x.rows)
+@hk.kernel(grid=_grid_q, name="quantize")
+def quantize_kernel(x: hk.Tensor[T], q: hk.Tensor[i8], s: hk.Tensor[fp32], *, warps=1,
+                    ROWS=ROWS, COLS=COLS, TPW=0, FOLD=1, EXACT=0):
+    # The tile is fp32 even though the tensor is bf16, and holding it in
+    # bf16 instead is not an optimization on this part -- it is a
+    # pessimization, measured. See the note above `visit`.
+    t = _ftile(ROWS, COLS, FOLD)
+    vt = hk.col_vec(t)
+    ncols = x.cols
+    nblk = hk.cdiv(ncols, COLS)
+    row_lo, _ = _block_start(hk.arch.block_idx.y, ROWS, x.rows)
 
-        def cb_of(step):
-            return step * WARPS + hk.arch.warp_id() if WARPS > 1 else step
+    def cb_of(step):
+        return step * warps + hk.arch.warp_id() if warps > 1 else step
 
-        def tile(cb):
-            col_lo, pad = _block_start(cb, COLS, ncols, EXACT)
-            idx = hk.elem_coord(0, 0, row_lo, col_lo)
-            return x[idx].load(t), pad, idx
+    def tile(cb):
+        col_lo, pad = _block_start(cb, COLS, ncols, EXACT)
+        idx = hk.elem_coord(0, 0, row_lo, col_lo)
+        return x[idx].load(t), pad, idx
 
-        held = [tile(cb_of(i)) for i in range(TPW)] if TPW else None
-        steps = None if TPW else hk.cdiv(nblk, WARPS)
+    held = [tile(cb_of(i)) for i in range(TPW)] if TPW else None
+    steps = None if TPW else hk.cdiv(nblk, warps)
 
-        def visit(fn):
-            """Once per column block this warp owns; see norm.visit."""
-            if TPW:
-                for rec in held:
-                    fn(*rec)
-            else:
-                for step in range(steps):
-                    fn(*tile(cb_of(step)))
-
-        amax = hk.zeros(vt)
-        # Unmasked. Backing the address up re-reads columns of the same row
-        # that a neighbouring block already covered, and a max of absolute
-        # values cannot be raised by an element it has already seen -- only a
-        # sum would need the overlap removed, and there is no sum here. `abs`
-        # writes to a tile of its own, so `v` is left as it was loaded, which
-        # matters because in the persistent variant it is the tile the write
-        # pass stores. See norm's visit().
-        #
-        # Holding the tile in bf16 instead of fp32 looks like the obvious way
-        # to halve what the persistent variant keeps alive, and on gfx1100 it
-        # is not: a 16-bit register tile is stored in the WMMA operand
-        # fragment layout, where lanes l and l+16 hold *identical* data, so a
-        # bf16 tile costs exactly as many VGPRs as an fp32 one. The toolchain
-        # already says so -- Target.tile_vgprs(16, ...) == tile_vgprs(32, ...)
-        # -- and the compiler agrees: at TPW=2, 145 VGPRs held in bf16 against
-        # 109 in fp32, because the bf16 version pays for the widening
-        # temporary on top. Pinned in tests/hk/ir/test_target.py.
-        visit(lambda v, pad, idx: amax.max_(v.abs().max(axis=1)))
-        amax = cross_warp(amax, "max", WARPS)
-        if FOLD != 1:
-            # The tile's 16 rows are 16 chunks of one row, so the row's absmax
-            # is the max of the 16 partial answers this vector holds. After
-            # this every entry holds it -- which is both what the rescale below
-            # wants (all 16 chunk-rows share the scale) and what lets the
-            # single-element store be written at all.
-            amax = fold_rows(amax, "max", WARPS)
-
-        amax.maximum(_TINY, into=amax)
-        scale = amax * (1.0 / 127.0)
-        inv = hk.full(vt, 127.0) / amax
-        if FOLD != 1:
-            # One workgroup, one row of the real tensor, one scale. block_idx.y
-            # *is* the row index: the folded view has rows*FOLD rows, the grid
-            # is one workgroup per FOLD of them, and FOLD == ROWS so
-            # _block_start never has to clamp.
-            s[hk.elem_coord(0, 0, 0, hk.arch.block_idx.y)].store_scalar(scale)
+    def visit(fn):
+        """Once per column block this warp owns; see norm.visit."""
+        if TPW:
+            for rec in held:
+                fn(*rec)
         else:
-            # Every warp writes the same 16 scales to the same 16 slots. That
-            # is the benign duplicate write the library already relies on for a
-            # backed-up block, and cheaper than branching the whole workgroup
-            # on warp 0.
-            s[hk.elem_coord(0, 0, 0, row_lo)] = scale
+            for step in range(steps):
+                fn(*tile(cb_of(step)))
 
-        def write(v, pad, idx):
-            v *= inv
-            # The rounding and the clamp are in convertor<int8, float>, which
-            # the store runs per element. Nothing here has to know about them.
-            q[idx] = v
+    amax = hk.zeros(vt)
+    # Unmasked. Backing the address up re-reads columns of the same row
+    # that a neighbouring block already covered, and a max of absolute
+    # values cannot be raised by an element it has already seen -- only a
+    # sum would need the overlap removed, and there is no sum here. `abs`
+    # writes to a tile of its own, so `v` is left as it was loaded, which
+    # matters because in the persistent variant it is the tile the write
+    # pass stores. See norm's visit().
+    #
+    # Holding the tile in bf16 instead of fp32 looks like the obvious way
+    # to halve what the persistent variant keeps alive, and on gfx1100 it
+    # is not: a 16-bit register tile is stored in the WMMA operand
+    # fragment layout, where lanes l and l+16 hold *identical* data, so a
+    # bf16 tile costs exactly as many VGPRs as an fp32 one. The toolchain
+    # already says so -- Target.tile_vgprs(16, ...) == tile_vgprs(32, ...)
+    # -- and the compiler agrees: at TPW=2, 145 VGPRs held in bf16 against
+    # 109 in fp32, because the bf16 version pays for the widening
+    # temporary on top. Pinned in tests/hk/ir/test_target.py.
+    visit(lambda v, pad, idx: amax.max_(v.abs().max(axis=1)))
+    amax = cross_warp(amax, "max", warps)
+    if FOLD != 1:
+        # The tile's 16 rows are 16 chunks of one row, so the row's absmax
+        # is the max of the 16 partial answers this vector holds. After
+        # this every entry holds it -- which is both what the rescale below
+        # wants (all 16 chunk-rows share the scale) and what lets the
+        # single-element store be written at all.
+        amax = fold_rows(amax, "max", warps)
 
-        visit(write)
+    amax.maximum(_TINY, into=amax)
+    scale = amax * (1.0 / 127.0)
+    inv = hk.full(vt, 127.0) / amax
+    if FOLD != 1:
+        # One workgroup, one row of the real tensor, one scale. block_idx.y
+        # *is* the row index: the folded view has rows*FOLD rows, the grid
+        # is one workgroup per FOLD of them, and FOLD == ROWS so
+        # _block_start never has to clamp.
+        s[hk.elem_coord(0, 0, 0, hk.arch.block_idx.y)].store_scalar(scale)
+    else:
+        # Every warp writes the same 16 scales to the same 16 slots. That
+        # is the benign duplicate write the library already relies on for a
+        # backed-up block, and cheaper than branching the whole workgroup
+        # on warp 0.
+        s[hk.elem_coord(0, 0, 0, row_lo)] = scale
 
-    return hk.kernel(body, warps=warps, grid=_grid_q, name=name)
+    def write(v, pad, idx):
+        v *= inv
+        # The rounding and the clamp are in convertor<int8, float>, which
+        # the store runs per element. Nothing here has to know about them.
+        q[idx] = v
+
+    visit(write)
 
 
-def _dequantize_kernel(name: str, dtype, warps: int):
-    def body(q: hk.Tensor[i8], s: hk.Tensor[fp32], o: hk.Tensor[dtype], *,
-             ROWS=ROWS, COLS=COLS, WARPS=warps, EXACT=0):
-        t = _ftile(ROWS, COLS)
-        vt = hk.col_vec(t)
-        ncols = q.cols
-        nblk = hk.cdiv(ncols, COLS)
-        row_lo, _ = _block_start(hk.arch.block_idx.y, ROWS, q.rows)
 
-        # No reduction, so no masking and no cross-warp combine: a backed-up
-        # block recomputes a few elements and writes them the same. The warps
-        # are here only for the wave count, and each loads its own copy of the
-        # 16 scales -- 64 bytes, against the tiles it is about to stream.
-        scale = s[hk.elem_coord(0, 0, 0, row_lo)].load(vt)
-        for step in range(hk.cdiv(nblk, WARPS)):
-            cb = step * WARPS + hk.arch.warp_id() if WARPS > 1 else step
-            col_lo, _ = _block_start(cb, COLS, ncols, EXACT)
-            idx = hk.elem_coord(0, 0, row_lo, col_lo)
-            v = q[idx].load(t)
-            v *= scale
-            o[idx] = v.to(dtype)
+@hk.kernel(grid=_grid_dq, name="dequantize")
+def dequantize_kernel(q: hk.Tensor[i8], s: hk.Tensor[fp32], o: hk.Tensor[T], *, warps=1,
+                      ROWS=ROWS, COLS=COLS, EXACT=0):
+    t = _ftile(ROWS, COLS)
+    vt = hk.col_vec(t)
+    ncols = q.cols
+    nblk = hk.cdiv(ncols, COLS)
+    row_lo, _ = _block_start(hk.arch.block_idx.y, ROWS, q.rows)
 
-    return hk.kernel(body, warps=warps, grid=_grid_dq, name=name)
+    # No reduction, so no masking and no cross-warp combine: a backed-up
+    # block recomputes a few elements and writes them the same. The warps
+    # are here only for the wave count, and each loads its own copy of the
+    # 16 scales -- 64 bytes, against the tiles it is about to stream.
+    scale = s[hk.elem_coord(0, 0, 0, row_lo)].load(vt)
+    for step in range(hk.cdiv(nblk, warps)):
+        cb = step * warps + hk.arch.warp_id() if warps > 1 else step
+        col_lo, _ = _block_start(cb, COLS, ncols, EXACT)
+        idx = hk.elem_coord(0, 0, row_lo, col_lo)
+        v = q[idx].load(t)
+        v *= scale
+        o[idx] = v.to(T)
+
 
 
 def _strip_quantize_kernel(name: str, dtype, warps: int):
@@ -294,9 +293,8 @@ _DTYPES = {"bf16": bf16, "fp16": fp16, "fp32": fp32}
 KERNELS = {}
 for _s, _dt in _DTYPES.items():
     for _w in WARP_COUNTS:
-        KERNELS[f"quantize_{_s}_w{_w}"] = _quantize_kernel(f"quantize_{_s}_w{_w}", _dt, _w)
-        KERNELS[f"dequantize_{_s}_w{_w}"] = _dequantize_kernel(
-            f"dequantize_{_s}_w{_w}", _dt, _w)
+        KERNELS[f"quantize_{_s}_w{_w}"] = quantize_kernel.variant(T=_dt, warps=_w)
+        KERNELS[f"dequantize_{_s}_w{_w}"] = dequantize_kernel.variant(T=_dt, warps=_w)
 del _s, _dt, _w
 
 #: (dtype suffix, warps) -> the strip quantize. CHUNKS, RUN and EXACT are
