@@ -6,6 +6,8 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+**SGLang-Diffusion: `sgld_qknorm` on SGLang 0.5.23.** 0.5.23 rewrote Qwen-Image 2.1's `apply_qk_norm_rope`; off CUDA it still falls back to the norm then `apply_rope`, now spelled `apply_rope(norm(x), rope)`. The route's engine contract looked for the old spelling only and turned the route off there; it now reads both.
+
 ## 0.9.17
 
 hk-dsl 0.9.17: one `@hk.kernel` definition serves every dtype and warp count -- a tensor annotated

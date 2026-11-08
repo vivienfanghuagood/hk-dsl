@@ -68,3 +68,16 @@ def test_uninstall_removes_both_files(tmp_path):
     assert all(p.exists() for p in written)
     assert sorted(sgld.uninstall(tmp_path)) == sorted(written)
     assert not any(p.exists() for p in written)
+
+
+@pytest.mark.parametrize("src,ok", [
+    # SGLang up to 0.5.22: the fallback goes through apply_qk_norm (norm(x) off CUDA)
+    ("    out = apply_rope(apply_qk_norm(x, norm), rope)\n    return out\n", True),
+    # SGLang 0.5.23: norm(x) directly, after two CUDA-only fusion gates
+    ("    if _is_cuda:\n        return fused\n    out = apply_rope(norm(x), rope)\n", True),
+    ("    return fused_only(x, norm, rope)\n", False),
+])
+def test_the_qknorm_contract_reads_both_forms_of_the_fallback(src, ok):
+    from hk.integration import contract
+
+    assert contract.norm_then_rope(src) is ok

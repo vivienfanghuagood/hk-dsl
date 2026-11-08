@@ -567,6 +567,17 @@ def judge_sgld_rope(f: dict) -> List[str]:
                       f"{sd.QWEN21_HOME}.apply_rope no longer multiplies view_as_complex(x.float()) by rope"))
 
 
+#: apply_qk_norm_rope's fallback off CUDA, as SGLang has written it: through apply_qk_norm (whose
+#: own fallback off CUDA is norm(x)) up to 0.5.22, norm(x) directly from 0.5.23.
+NORM_THEN_ROPE = ("apply_rope(apply_qk_norm(x, norm), rope)", "apply_rope(norm(x), rope)")
+
+
+def norm_then_rope(src: str) -> bool:
+    """Whether apply_qk_norm_rope's source falls back to the chain rmsnorm_rotary_pairs computes:
+    the norm, then apply_rope."""
+    return any(form in src for form in NORM_THEN_ROPE)
+
+
 def gather_sgld_qknorm() -> dict:
     import importlib  # noqa: PLC0415
 
@@ -579,7 +590,7 @@ def gather_sgld_qknorm() -> dict:
     native = inspect.getsource(RMSNorm.forward_native)
     return {"apply_qk_norm_rope": names(fn),
             # the chain rmsnorm_rotary_pairs computes: norm, then apply_rope
-            "norm_then_rope": "apply_rope(apply_qk_norm(x, norm), rope)" in inspect.getsource(fn),
+            "norm_then_rope": norm_then_rope(inspect.getsource(fn)),
             "rmsnorm_native": all(s in native for s in (
                 ".pow(2).mean(dim=-1, keepdim=True)", "torch.rsqrt(variance + self.variance_epsilon)",
                 "self.weight * x.to(orig_dtype)"))}
