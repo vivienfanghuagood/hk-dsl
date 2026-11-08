@@ -88,7 +88,7 @@ to vLLM's own kernel:
 | bf16 linear layers | `vllm_gemm` | on | on | Qwen3-8B, Qwen3-1.7B, Qwen3.5-9B |
 | AWQ 4-bit linear layers (gfx1201: prefill too, 65-512 tokens) | `vllm_int4` | on | on | Qwen3-8B-AWQ, Qwen3-14B-AWQ |
 | GPTQ 4-bit linear layers (symmetric, no act-order) | `vllm_gptq` | on | on | Qwen3.8-27B-GPTQ-Int4 |
-| AMD Quark W4A16 linear layers (symmetric int4) | `vllm_quark` | opt-in (`HK_VLLM_QUARK=1`) | on | Qwen3.8-27B-Quark-AWQ-INT4-W4A16 |
+| AMD Quark W4A16 linear layers (symmetric int4) | `vllm_quark` | on | on | Qwen3.8-27B-Quark-AWQ-INT4-W4A16 |
 | bf16 MoE experts | `vllm_moe` | on | on | OLMoE-1B-7B |
 | AWQ 4-bit MoE experts | `vllm_moe_wna16` | on | on | Qwen3.6-35B-A3B-AWQ |
 | attention prefill (head size 64, 128 or 256; bf16, and from 0.9.15 fp16) | `vllm_prefill` | on | on | MiniCPM5-2B, Qwen3-8B, Qwen3.8-27B, MiniCPM-V-4.7 |

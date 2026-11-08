@@ -294,6 +294,36 @@ def test_vllm_gptq_hybrid_takes_every_batch_vllm_sends_to_triton_in_place(monkey
     assert seen == [(1, None), (4, None)]
 
 
+def test_vllm_quark_takes_min_m_to_64_on_a_copy_and_leaves_the_rest(monkeypatch):
+    """Quark W4A16 layers on RDNA3W4A16LinearKernel (gfx1100): hk's symmetric layout of Quark's own
+    codes (repack_quark: AWQ's nibble order, signed codes), MIN_M to 64 tokens on hk's decode GEMM,
+    the rest on vLLM's gptq_gemm_rdna3."""
+    from hk.integration import vllm_quark
+    from hk.ops.w4a16 import AWQ_ORDER
+
+    _on_here("vllm_quark")
+    seen = []
+    monkeypatch.setattr(vllm_gptq, "_vllm_gptq", lambda x, *a: seen.append(x.shape[0]))
+    n, k, group = 512, 1024, 128
+    g = torch.Generator("cuda").manual_seed(8)
+    q = torch.randint(0, 16, (k, n), device="cuda", generator=g, dtype=torch.int32)   # zero 8
+    signed = (q ^ 8).to(torch.int64)
+    quark = sum((signed[:, c::8] & 0xF) << (4 * AWQ_ORDER[c]) for c in range(8))
+    quark = torch.where(quark >= 2 ** 31, quark - 2 ** 32, quark).to(torch.int32)
+    s = (torch.rand(k // group, n, device="cuda", generator=g) * 0.02 + 0.005).half()
+    qw, sc, _ = w4a16.repack_quark(quark, s, group, dtype=torch.float16)
+    w = ((q - 8).float() * s.float().repeat_interleave(group, 0)).t()
+    for m in sorted({vllm_gptq.MIN_M, 2, 4, 64}):
+        x = torch.randn(m, k, device="cuda", dtype=torch.float16) * 0.1
+        before = vllm_quark.PATCH.stats["hk"]
+        y = vllm_quark.quark_w4a16(x, None, None, None, qw, sc, group)
+        assert vllm_quark.PATCH.stats["hk"] == before + 1 and y.shape == (m, n)
+        _close(y, x.float() @ w.t())
+    vllm_quark.quark_w4a16(torch.randn(65, k, device="cuda", dtype=torch.float16),
+                           None, None, None, qw, sc, group)
+    assert seen == [65]
+
+
 def test_vllm_quark_hybrid_takes_every_batch_vllm_sends_to_triton_in_place(monkeypatch):
     """Quark W4A16 layers on RDNAHybridW4A16LinearKernel (gfx1201), at Quark's group 128: hk reads
     vLLM's own skinny-layout tensors and takes the batches vLLM would run on Triton (decode forms to

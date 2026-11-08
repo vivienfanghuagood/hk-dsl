@@ -6,6 +6,8 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+**vLLM: Quark W4A16 on by default on gfx1100 too** (`vllm_quark`). One W7900D, amd/Qwen3.8-27B-Quark-AWQ-INT4-W4A16, 4 alternating rounds: TPOT 1.13x / 1.18x / 1.25x at 1 / 4 / 8 concurrent requests, TTFT level (prefill stays vLLM's there), GSM8K-200 equal.
+
 ## 0.9.15
 
 hk-dsl 0.9.15: on gfx1201, AMD Quark W4A16 checkpoints run on hk's 4-bit forms (`vllm_quark`, on by
