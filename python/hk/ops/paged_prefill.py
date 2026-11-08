@@ -31,7 +31,9 @@ import math
 from typing import Dict, Optional
 
 from .. import dsl as hk
-from ..types import bf16, fp32, i32
+from ..types import bf16, fp16, fp32, i32
+
+fp16_t = fp16
 from . import _arch
 from .attn import _derive
 
@@ -63,7 +65,7 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
                          layout: str = "hk", page: int = 16, dsplit: bool = False,
                          decodes: bool = False, vt_pages: bool = False,
                          kv_order: str = "planes", kv_splits: int = 1, pack: bool = False,
-                         rev: bool = False):
+                         rev: bool = False, dtype=bf16):
     """Causal paged prefill: `q` and `o` are the engine's (tokens, heads *
     head_dim) rows, `q_start` the batch's query_start_loc.
 
@@ -134,6 +136,10 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
     The vLLM routes' kernels (KV split aside) take it: gfx1100 MiniCPM-V d256 8k prompt 1.10x;
     d128 (MiniCPM5, Qwen3-8B) prompts 1.04-1.08x, 4096-token chunks 1.01-1.04x, none slower.
 
+    `dtype` (bf16 or fp16): of q, the cache, o and the partials -- the engine's activations
+    (fp16-served models: GPTQ / AWQ checkpoints run --dtype float16). Scores, softmax and O
+    accumulate in fp32 either way; P feeds the PV WMMA in `dtype`.
+
     `dsplit` (head_dim 256): a query row's head_dim is split between a pair of
     warps, each holding its half of Q and of O (a d256 row in one warp is 256
     VGPRs of Q and O alone). Each computes its half's partial S, the pair adds
@@ -187,16 +193,19 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
     masked_v = paged and page >= kv_block and page > 16
     halves = 2 if dsplit else 1
 
-    st_k = hk.ST(bf16, kv_block, dh, halves) if dsplit else hk.ST(bf16, kv_block, head_dim)
-    st_vt = hk.ST(bf16, dh, kv_block, halves) if dsplit else hk.ST(bf16, head_dim, kv_block)
-    ty_q = hk.RT(bf16, 16, 16, "row")
-    ty_k = hk.RT(bf16, 16, 16, "row")
+    if dtype not in (bf16, fp16):
+        raise ValueError(f"dtype {dtype}: bf16 or fp16")
+    dt = dtype
+    st_k = hk.ST(dt, kv_block, dh, halves) if dsplit else hk.ST(dt, kv_block, head_dim)
+    st_vt = hk.ST(dt, dh, kv_block, halves) if dsplit else hk.ST(dt, head_dim, kv_block)
+    ty_q = hk.RT(dt, 16, 16, "row")
+    ty_k = hk.RT(dt, 16, 16, "row")
     ty_s = hk.RT(fp32, 16, q_block, "col")
     ty_o = hk.RT(fp32, 16, q_block, "col")
-    ty_v = hk.RT(bf16, 16, vt_d_chunk, "row")
-    ty_vr = hk.RT(bf16, 16, 16, "row")
+    ty_v = hk.RT(dt, 16, vt_d_chunk, "row")
+    ty_vr = hk.RT(dt, 16, 16, "row")
     ty_vec = hk.row_vec(ty_s)
-    k_ty = hk.Tensor[bf16, "strided"] if rocm else hk.Tensor[bf16]
+    k_ty = hk.Tensor[dt, "strided"] if rocm else hk.Tensor[dt]
     packed = decodes and paged and not dsplit       # GQA-packed decode workgroups
     if packed and group > 16:
         raise ValueError(f"group={group}: a packed decode is one 16-row tile of query heads")
@@ -240,7 +249,7 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
         else:
             buf_k = g.stage_buffer(k_s, name="buf_k")
         if packed:
-            q_s = hk.lds.alloc(hk.ST(bf16, 16, head_dim), name="q_s")
+            q_s = hk.lds.alloc(hk.ST(dt, 16, head_dim), name="q_s")
             buf_q = g.stage_buffer(q_s, name="buf_q")
         gr_k = k_me.granules(name="gr_k")
         gr_vt = vt_me.granules(name="gr_vt")
@@ -496,7 +505,7 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
                 l_run += s_f[n].sum(axis=0)
 
             for n in range(kv_frags):
-                p_cvt = s_f[n].to(bf16)
+                p_cvt = s_f[n].to(dt)
                 for g0 in range(0, d_frags, pv_tiles):
                     v_win = [gr_vt.load_frag(g0 + i, n, ty_vr)
                              for i in range(pv_tiles)]
@@ -572,6 +581,10 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
     # the cache's K is strided for layout="rocm" (the annotation is a string
     # under `from __future__ import annotations`; this is its value)
     body.__annotations__["k_cache"] = k_ty
+    # the activation dtype's tensors (their string annotations name bf16)
+    for nm in ("q", "v_cache", "o", "oh", "o_part"):
+        body.__annotations__[nm] = hk.Tensor[dt]
+    body.__annotations__["qh"] = hk.Tensor[dt, "strided"]
     if kv_splits > 1:
         # the eight tensors and the partials' two
         import inspect  # noqa: PLC0415
@@ -611,7 +624,7 @@ MERGE_STEP = 4
 
 
 def merge_kernel(name: str, *, head_dim: int = 128, kv_splits: int = 2, q_tile: int = Q_TILE,
-                 cols: int = 32, step: Optional[int] = None):
+                 cols: int = 32, step: Optional[int] = None, dtype=bf16):
     """paged_prefill_kernel's `kv_splits` merge: a request's rows of `o` from the splits'
     partials, each weighed by l * exp2(m - the rows' max). Tensors: `seq_lens` (the grid's
     requests; not read), `q_start`, `tiles` (the same view the walk took), `o_part`, `ml_part`,
@@ -634,8 +647,9 @@ def merge_kernel(name: str, *, head_dim: int = 128, kv_splits: int = 2, q_tile: 
     loop = min(loop, kv_splits)
     if loop and kv_splits % loop:
         raise ValueError(f"kv_splits {kv_splits}: a multiple of the merge step {loop}")
+    dt = dtype
     t_o = hk.RT(fp32, 16, cols, "row")
-    t_b = hk.RT(bf16, 16, cols, "row")
+    t_b = hk.RT(dt, 16, cols, "row")
     cv = hk.col_vec(t_o)
 
     def body(seq_lens: hk.Tensor[i32], q_start: hk.Tensor[i32], tiles: hk.Tensor[i32],
@@ -674,7 +688,7 @@ def merge_kernel(name: str, *, head_dim: int = 128, kv_splits: int = 2, q_tile: 
                     acc += o_s
             tot += 1e-30
             acc /= tot[:, None]
-            o[hk.elem_coord(0, 0, q0 + r0, head * head_dim + c0)].store(acc.to(bf16), bounded=left)
+            o[hk.elem_coord(0, 0, q0 + r0, head * head_dim + c0)].store(acc.to(dt), bounded=left)
             return
         ms = [ml_part[hk.elem_coord(s, head, 0, slot)].load(cv) for s in range(kv_splits)]
         top = hk.full(cv, -1e30)
@@ -694,8 +708,10 @@ def merge_kernel(name: str, *, head_dim: int = 128, kv_splits: int = 2, q_tile: 
             o_s *= m[:, None]
             acc += o_s
         acc /= tot[:, None]
-        o[hk.elem_coord(0, 0, q0 + r0, head * head_dim + c0)].store(acc.to(bf16), bounded=left)
+        o[hk.elem_coord(0, 0, q0 + r0, head * head_dim + c0)].store(acc.to(dt), bounded=left)
 
+    body.__annotations__["o_part"] = hk.Tensor[dt]
+    body.__annotations__["o"] = hk.Tensor[dt]
     return hk.kernel(body, warps=1, name=name,
                      grid=lambda p: (p.tiles.rows * (q_tile // 16), p.o.cols // cols,
                                      p.seq_lens.cols))
@@ -704,18 +720,19 @@ def merge_kernel(name: str, *, head_dim: int = 128, kv_splits: int = 2, q_tile: 
 _SPLIT_PARTS: dict = {}
 
 
-def split_parts(kv_splits: int, rows: int, heads: int, head_dim: int, device):
+def split_parts(kv_splits: int, rows: int, heads: int, head_dim: int, device, dtype=None):
     """`o_part` and `ml_part` for the kv_splits walk over `rows` = requests * tiles * Q tile
     rows (at least): one pair a (device, splits, heads, head_dim), grown by powers of two, so a
     launch allocates nothing once warm."""
     import torch  # noqa: PLC0415
 
-    key = (str(device), kv_splits, heads, head_dim)
+    dtype = dtype or torch.bfloat16
+    key = (str(device), kv_splits, heads, head_dim, dtype)
     have = _SPLIT_PARTS.get(key)
     if have is None or have[0].shape[2] < rows:
         cap = 1 << max(0, (max(1, rows) - 1).bit_length())
         have = _SPLIT_PARTS[key] = (
-            torch.empty(1, kv_splits, cap, heads * head_dim, device=device, dtype=torch.bfloat16),
+            torch.empty(1, kv_splits, cap, heads * head_dim, device=device, dtype=dtype),
             torch.empty(kv_splits, heads, 2, cap, device=device, dtype=torch.float32))
     return have
 
@@ -730,11 +747,11 @@ def _native_cdna() -> bool:
 
 
 def rocm_kernel_for(head_dim: int, group: int, scale: Optional[float] = None,
-                    page: int = 16):
+                    page: int = 16, fp16: bool = False):
     """The paged prefill over vLLM ROCM_ATTN's own cache (layout="rocm"), for
-    (head_dim, group, scale, page); gfx1100."""
+    (head_dim, group, scale, page, bf16 or fp16); gfx1100."""
     key = ("rocm", head_dim, group, None if scale is None or scale == head_dim ** -0.5
-           else float(scale), page)
+           else float(scale), page, fp16)
     k = _KERNELS.get(key)
     if k is None:
         import struct  # noqa: PLC0415
@@ -742,8 +759,9 @@ def rocm_kernel_for(head_dim: int, group: int, scale: Optional[float] = None,
         tag = "" if key[3] is None else "_s%016x" % struct.unpack(
             "<Q", struct.pack("<d", key[3]))[0]
         k = _KERNELS[key] = paged_prefill_kernel(
-            f"paged_prefill_rocm_d{head_dim}_g{group}_p{page}_r{tag}", head_dim=head_dim,
-            group=group, scale=key[3], layout="rocm", page=page, rev=True)
+            f"paged_prefill_rocm_d{head_dim}_g{group}_p{page}_r{'_f16' if fp16 else ''}{tag}",
+            head_dim=head_dim, group=group, scale=key[3], layout="rocm", page=page, rev=True,
+            dtype=fp16_t if fp16 else bf16)
     return k
 
 
@@ -755,7 +773,7 @@ def rocm_views(key_cache, value_cache):
 
 
 def vt_pack_kernel(name: str = "paged_vt_pack", *, head_dim: int = 128, page: int = 16,
-                   kv_block: int = KV_BLOCK, kv_order: str = "planes"):
+                   kv_block: int = KV_BLOCK, kv_order: str = "planes", dtype=bf16):
     """TRITON_ATTN's V pages, transposed into consecutive V^T slots for `vt_pages`: request r's
     page j (j < cdiv(seq_len, page)) to slot (pages of the requests before r) + j, (slots,
     kv_heads, head_dim, page). `kv` is the flash cache (blocks, 2, page, kv_heads * head_dim),
@@ -768,7 +786,7 @@ def vt_pack_kernel(name: str = "paged_vt_pack", *, head_dim: int = 128, page: in
         raise ValueError("page and head_dim multiples of 16")
     unit = _pack_unit(page, kv_block)
     halves = page % kv_block and kv_block % page     # pages of half blocks (784)
-    ty = hk.RT(bf16, 16, 16, "row")
+    ty = hk.RT(dtype, 16, 16, "row")
 
     def body(kv: hk.Tensor[bf16], block_table: hk.Tensor[i32], seq_lens: hk.Tensor[i32],
              span: hk.Tensor[i32], vt: hk.Tensor[bf16]):
@@ -796,6 +814,8 @@ def vt_pack_kernel(name: str = "paged_vt_pack", *, head_dim: int = 128, page: in
             vt[hk.elem_coord(base + pj, h, 16 * c, row)].store(hk.transpose_sep(v),
                                                                 bounded=live * 16)
 
+    body.__annotations__["kv"] = hk.Tensor[dtype]
+    body.__annotations__["vt"] = hk.Tensor[dtype]
     return hk.kernel(body, warps=1, grid=lambda p: (p.span.rows, p.vt.depth, p.seq_lens.cols),
                      name=name)
 

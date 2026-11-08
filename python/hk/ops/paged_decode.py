@@ -47,7 +47,7 @@ import math
 from typing import Dict, Optional
 
 from .. import dsl as hk
-from ..types import bf16, fp32, i32
+from ..types import bf16, fp16 as fp16_t, fp32, i32
 from . import _arch
 from .paged_prefill import _kv_at
 
@@ -61,7 +61,7 @@ NEG_INF = float("-inf")
 def walk_kernel(name: str, *, head_dim: int = 128, group: int = 8, page: int = 16,
                 kv_order: str = "planes", splits: int = 1, scale: Optional[float] = None,
                 warps: int = 4, v_both: bool = False, max_vgprs: int = 256,
-                min_occupancy: int = 1):
+                min_occupancy: int = 1, dtype=bf16):
     """The split walk. Tensors: `qh` (1, tokens, heads, head_dim) -- the engine's query rows,
     which may be row-strided (a fused qkv's) -- and `out` (tokens, kv_heads, group, head_dim),
     the engine's contiguous output viewed by kv head; `kv` the cache as its `kv_order` view,
@@ -96,14 +96,15 @@ def walk_kernel(name: str, *, head_dim: int = 128, group: int = 8, page: int = 1
     # LDS slots the fold uses at once, (d_frags + 2) fp32 tiles each
     slots = max(1, min(walkers // 2, 2 if d_frags <= 8 and not dsplit else 1)) * halves
 
-    ty_q = hk.RT(bf16, 16, 16, "row")
-    ty_k = hk.RT(bf16, 16, 16, "row")
+    dt = dtype           # the activations' and cache's: bf16, or fp16 for fp16-served models
+    ty_q = hk.RT(dt, 16, 16, "row")
+    ty_k = hk.RT(dt, 16, 16, "row")
     ty_s = hk.RT(fp32, 16, Q_TILE, "col")
     ty_o = hk.RT(fp32, 16, Q_TILE, "col")
-    ty_v = hk.RT(bf16, 16, 16, "row")
+    ty_v = hk.RT(dt, 16, 16, "row")
     ty_vec = hk.row_vec(ty_s)
 
-    kv_ty = hk.Tensor[bf16, "strided"] if rocm else hk.Tensor[bf16]
+    kv_ty = hk.Tensor[dt, "strided"] if rocm else hk.Tensor[dt]
 
     def body(qh: hk.Tensor[bf16, "strided"], kv: kv_ty, block_table: hk.Tensor[i32],
              seq_lens: hk.Tensor[i32], q_start: hk.Tensor[i32], out: hk.Tensor[bf16],
@@ -123,7 +124,7 @@ def walk_kernel(name: str, *, head_dim: int = 128, group: int = 8, page: int = 1
         hi = hk.min(n_blk, lo + per)
 
         g = hk.group(warps)
-        q_s = hk.lds.alloc(hk.ST(bf16, 16, head_dim), name="q_s")
+        q_s = hk.lds.alloc(hk.ST(dt, 16, head_dim), name="q_s")
         if walkers > 1:
             # the fold's slots: a giving warp's O, and its m and l as tiles
             xo = hk.lds.alloc(hk.ST(fp32, 16, Q_TILE, slots * d_frags), name="xo")
@@ -139,7 +140,7 @@ def walk_kernel(name: str, *, head_dim: int = 128, group: int = 8, page: int = 1
             # ROCM_ATTN's x-split K goes through LDS (a strided tensor is read by g.stage): each
             # step the workgroup stages every walker's block, a 16-token page a slot
             # exactly the walkers' blocks: LDS is what bounds the workgroups a WGP holds here
-            k_s = hk.lds.alloc(hk.ST(bf16, KV_BLOCK, head_dim, walkers), name="k_s")
+            k_s = hk.lds.alloc(hk.ST(dt, KV_BLOCK, head_dim, walkers), name="k_s")
             k_w = [k_s[w] if walkers > 1 else k_s for w in range(walkers)]
             k_pg = [[k_w[w].subtile(16, head_dim, p, 0) for p in range(ppb)]
                     for w in range(walkers)]
@@ -148,7 +149,7 @@ def walk_kernel(name: str, *, head_dim: int = 128, group: int = 8, page: int = 1
             buf_k = g.stage_buffer(k_pg[0][0], depth=walkers * ppb, name="buf_k")
             gr_k = (k_s[walker] if walkers > 1 else k_s).granules(name="gr_k")
             # V^T too: register loads of its fragments spill under ROCm 7.2.4's compiler
-            vt_s = hk.lds.alloc(hk.ST(bf16, head_dim, KV_BLOCK, walkers), name="vt_s")
+            vt_s = hk.lds.alloc(hk.ST(dt, head_dim, KV_BLOCK, walkers), name="vt_s")
             v_w = [vt_s[w] if walkers > 1 else vt_s for w in range(walkers)]
             v_pg = [[v_w[w].subtile(head_dim, 16, 0, p) for p in range(ppb)]
                     for w in range(walkers)]
@@ -278,7 +279,7 @@ def walk_kernel(name: str, *, head_dim: int = 128, group: int = 8, page: int = 1
             if rocm:
                 return          # PV after V^T's commit (a workgroup op): pv_rocm
             for n in range(kv_frags):
-                p_cvt = s_f[n].to(bf16)
+                p_cvt = s_f[n].to(dt)
                 if n:
                     vs = vs1 if vs1 is not None else v_row(n)
                 for g0 in range(d_frags):
@@ -292,7 +293,7 @@ def walk_kernel(name: str, *, head_dim: int = 128, group: int = 8, page: int = 1
 
             def pv_rocm(s_f):
                 for n in range(kv_frags):
-                    p_cvt = s_f[n].to(bf16)
+                    p_cvt = s_f[n].to(dt)
                     # V^T fragments (16 of head_dim by the page's 16 tokens), two in flight
                     for g0 in range(0, d_frags, 2):
                         gs = list(range(g0, min(g0 + 2, d_frags)))
@@ -426,6 +427,9 @@ def walk_kernel(name: str, *, head_dim: int = 128, group: int = 8, page: int = 1
                 ml_part[hk.elem_coord(row, kv_head, 1, 0)] = l_run
 
     body.__annotations__["kv"] = kv_ty
+    for nm in ("out", "o_part", "vt"):
+        body.__annotations__[nm] = hk.Tensor[dt]
+    body.__annotations__["qh"] = hk.Tensor[dt, "strided"]
     if not rocm:
         import inspect  # noqa: PLC0415
 
@@ -437,7 +441,7 @@ def walk_kernel(name: str, *, head_dim: int = 128, group: int = 8, page: int = 1
 
 
 def merge_kernel_def(name: str, *, head_dim: int = 128, group: int = 8, splits: int = 8,
-                     step: int = 8):
+                     step: int = 8, dtype=bf16):
     """Combine a request's `splits` partials into `out` at the request's token; a request with
     no query (a graph's padding) writes nothing. One workgroup a (16 columns of head_dim, kv
     head, request), a warp a group of `step` splits: every warp reads its splits' partials in one
@@ -450,7 +454,7 @@ def merge_kernel_def(name: str, *, head_dim: int = 128, group: int = 8, splits: 
     step = -(-splits // groups)
     warps = groups                     # a workgroup a 16-column fragment, a warp a split group
     ty_ot = hk.RT(fp32, Q_TILE, 16, "row")
-    ty_ob = hk.RT(bf16, Q_TILE, 16, "row")
+    ty_ob = hk.RT(dtype, Q_TILE, 16, "row")
     cvec = hk.col_vec(ty_ot)
 
     def body(seq_lens: hk.Tensor[i32], q_start: hk.Tensor[i32], out: hk.Tensor[bf16],
@@ -527,6 +531,8 @@ def merge_kernel_def(name: str, *, head_dim: int = 128, group: int = 8, splits: 
         else:
             emit(acc, l_acc)
 
+    body.__annotations__["out"] = hk.Tensor[dtype]
+    body.__annotations__["o_part"] = hk.Tensor[dtype]
     return hk.kernel(body, warps=warps, name=name,
                      grid=lambda p: (d_frags, p.out.depth, p.seq_lens.cols))
 
@@ -540,26 +546,29 @@ def _tag(scale):
 
 
 def walk_for(head_dim: int, group: int, page: int, kv_order: str, splits: int,
-             scale: Optional[float] = None, warps: int = 4, v_both: bool = False):
-    """The walk for one (shape, layout, split count), built on first use."""
+             scale: Optional[float] = None, warps: int = 4, v_both: bool = False,
+             fp16: bool = False):
+    """The walk for one (shape, layout, split count, bf16 or fp16), built on first use."""
     _arch.require("hk.ops.paged_decode")
-    key = (head_dim, group, page, kv_order, splits, scale, warps, v_both)
+    key = (head_dim, group, page, kv_order, splits, scale, warps, v_both, fp16)
     if key not in _WALK:
         _WALK[key] = walk_kernel(
             f"paged_decode_flash_d{head_dim}_g{group}_p{page}_{kv_order}_s{splits}_w{warps}"
-            f"{'_vb' if v_both else ''}{_tag(scale)}", head_dim=head_dim, group=group, page=page,
-            kv_order=kv_order, splits=splits, scale=scale, warps=warps, v_both=v_both)
+            f"{'_vb' if v_both else ''}{'_f16' if fp16 else ''}{_tag(scale)}", head_dim=head_dim,
+            group=group, page=page, kv_order=kv_order, splits=splits, scale=scale, warps=warps,
+            v_both=v_both, dtype=fp16_t if fp16 else bf16)
     return _WALK[key]
 
 
-def merge_for(head_dim: int, group: int, splits: int, step: int = 8):
+def merge_for(head_dim: int, group: int, splits: int, step: int = 8, fp16: bool = False):
     """The merge of `splits` partials, built on first use."""
     _arch.require("hk.ops.paged_decode")
-    key = (head_dim, group, splits, step)
+    key = (head_dim, group, splits, step, fp16)
     if key not in _MERGE:
         _MERGE[key] = merge_kernel_def(
-            f"paged_decode_merge_d{head_dim}_g{group}_s{splits}_m{step}", head_dim=head_dim,
-            group=group, splits=splits, step=step)
+            f"paged_decode_merge_d{head_dim}_g{group}_s{splits}_m{step}{'_f16' if fp16 else ''}",
+            head_dim=head_dim, group=group, splits=splits, step=step,
+            dtype=fp16_t if fp16 else bf16)
     return _MERGE[key]
 
 
@@ -632,9 +641,10 @@ def plan_rocm(n_reqs: int, n_kv_heads: int, wgps: Optional[int] = None) -> int:
     return max(1, min(ROCM_MAX_SPLITS, ROCM_WGS_PER_WGP * (wgps or 48) // have))
 
 
-def scratch(rows: int, n_kv_heads: int, group: int, head_dim: int, device):
-    """(o_part, ml_part) for `rows` = requests x splits."""
+def scratch(rows: int, n_kv_heads: int, group: int, head_dim: int, device, dtype=None):
+    """(o_part, ml_part) for `rows` = requests x splits; o_part in the activations' dtype."""
     import torch  # noqa: PLC0415
 
-    return (torch.empty(rows, n_kv_heads, group, head_dim, device=device, dtype=torch.bfloat16),
+    return (torch.empty(rows, n_kv_heads, group, head_dim, device=device,
+                        dtype=dtype or torch.bfloat16),
             torch.empty(rows, n_kv_heads, 2, Q_TILE, device=device, dtype=torch.float32))
