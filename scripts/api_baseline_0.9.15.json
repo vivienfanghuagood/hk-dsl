@@ -9960,6 +9960,9 @@
 "_prefill": {
 "params": []
 },
+"_quark": {
+"params": []
+},
 "_sdpa": {
 "params": []
 },
@@ -10193,6 +10196,9 @@
 "gather_vllm_prefill": {
 "params": []
 },
+"gather_vllm_quark": {
+"params": []
+},
 "gather_vllm_sdpa": {
 "params": []
 },
@@ -10297,6 +10303,11 @@
 ]
 },
 "judge_vllm_prefill": {
+"params": [
+"f"
+]
+},
+"judge_vllm_quark": {
 "params": [
 "f"
 ]
@@ -11166,11 +11177,29 @@
 "PATCH": {},
 "PREFIXES": {},
 "STATS": {},
+"_CONFIG_WRAPPER": {},
 "_GUARDED": {},
 "_ORIG": {},
 "_ORIG_CONFIG": {},
 "_ORIG_TOPK": {},
+"_block16": {
+"params": [
+"out",
+"w1_shape",
+"w2_shape",
+"dtype",
+"M",
+"is_marlin",
+"block_shape",
+"return_down_config"
+]
+},
 "_common": {},
+"_config_wrapper": {
+"params": [
+"orig"
+]
+},
 "_homes": {
 "params": []
 },
@@ -12136,6 +12165,13 @@
 "cu"
 ]
 },
+"hybrid_why": {
+"params": [
+"kernel",
+"layer",
+"group"
+]
+},
 "plan_call": {
 "params": [
 "fn"
@@ -12146,6 +12182,9 @@
 "self",
 "layer"
 ]
+},
+"read_skinny": {
+"params": []
 },
 "revert": {
 "params": []
@@ -12254,10 +12293,26 @@
 "PATCH": {},
 "PREFIXES": {},
 "STATS": {},
+"_CONFIG_WRAPPER": {},
 "_GUARDED": {},
 "_ORIG": {},
 "_ORIG_CONFIG": {},
+"_block16": {
+"params": [
+"config",
+"w1_shape",
+"w2_shape",
+"dtype",
+"M",
+"block_shape"
+]
+},
 "_common": {},
+"_config_wrapper": {
+"params": [
+"orig"
+]
+},
 "_plain": {
 "params": [
 "A_scale",
@@ -12409,12 +12464,28 @@
 "STATS": {},
 "Tuple": {},
 "VALIDATED": {},
+"_CONFIG_WRAPPER": {},
 "_FORCE": {},
 "_GUARDED": {},
 "_MAX": {},
 "_ORIG": {},
 "_ORIG_CONFIG": {},
+"_block16": {
+"params": [
+"config",
+"w1_shape",
+"w2_shape",
+"dtype",
+"M",
+"block_shape"
+]
+},
 "_common": {},
+"_config_wrapper": {
+"params": [
+"orig"
+]
+},
 "_int32": {
 "params": []
 },
@@ -12682,7 +12753,8 @@
 "splits",
 "scale",
 "warps",
-"v_both"
+"v_both",
+"fp16"
 ]
 },
 "_decode_scratch": {
@@ -12691,7 +12763,13 @@
 "rows",
 "hkv",
 "group",
-"d"
+"d",
+"dtype"
+]
+},
+"_dt": {
+"params": [
+"fp16"
 ]
 },
 "_flash_kv": {
@@ -12707,12 +12785,18 @@
 "scale",
 "page",
 "order",
-"decodes"
+"decodes",
+"fp16"
 ]
 },
 "_guard": {
 "params": [
 "a"
+]
+},
+"_is_f16": {
+"params": [
+"t"
 ]
 },
 "_kvs_ops": {
@@ -12724,7 +12808,8 @@
 "order",
 "splits",
 "warps",
-"pack"
+"pack",
+"fp16"
 ]
 },
 "_kvs_warm": {
@@ -12750,7 +12835,8 @@
 "head_dim",
 "group",
 "scale",
-"page"
+"page",
+"fp16"
 ]
 },
 "_otag": {
@@ -12811,7 +12897,8 @@
 "scale",
 "page",
 "order",
-"decodes"
+"decodes",
+"fp16"
 ]
 },
 "_vt_scratch": {
@@ -12820,7 +12907,8 @@
 "slots",
 "hkv",
 "d",
-"page"
+"page",
+"dtype"
 ]
 },
 "annotations": {},
@@ -12961,6 +13049,89 @@
 "causal"
 ]
 }
+},
+"hk.integration.vllm_quark": {
+"Callable": {},
+"Counter": {},
+"HYBRID": {},
+"Optional": {},
+"PATCH": {},
+"REFUSED": {},
+"STATS": {},
+"_ORIG_APPLY": {},
+"_ORIG_PWAL": {},
+"_common": {},
+"_fake": {
+"params": [
+"x",
+"w_q",
+"w_zp",
+"w_s",
+"hk_qw",
+"hk_s",
+"group"
+]
+},
+"_fake_hybrid": {
+"params": [
+"x",
+"w_q",
+"w_s",
+"group",
+"cu"
+]
+},
+"_why_not": {
+"params": [
+"self"
+]
+},
+"annotations": {},
+"apply_patch": {
+"params": []
+},
+"apply_weights": {
+"params": [
+"self",
+"layer",
+"x",
+"bias"
+]
+},
+"engine": {},
+"process_weights_after_loading": {
+"params": [
+"self",
+"layer"
+]
+},
+"quark_w4a16": {
+"params": [
+"x",
+"w_q",
+"w_zp",
+"w_s",
+"hk_qw",
+"hk_s",
+"group"
+]
+},
+"quark_w4a16_hybrid": {
+"params": [
+"x",
+"w_q",
+"w_s",
+"group",
+"cu"
+]
+},
+"revert": {
+"params": []
+},
+"status": {
+"params": []
+},
+"vllm_gptq": {}
 },
 "hk.integration.vllm_sparse_mla": {
 "Callable": {},
@@ -16719,6 +16890,7 @@
 "device"
 ]
 },
+"fp16_t": {},
 "fp32": {},
 "hk": {},
 "i32": {},
@@ -16728,7 +16900,8 @@
 "head_dim",
 "group",
 "splits",
-"step"
+"step",
+"fp16"
 ]
 },
 "merge_kernel_def": {
@@ -16737,7 +16910,8 @@
 "head_dim",
 "group",
 "splits",
-"step"
+"step",
+"dtype"
 ]
 },
 "plan": {
@@ -16769,7 +16943,8 @@
 "n_kv_heads",
 "group",
 "head_dim",
-"device"
+"device",
+"dtype"
 ]
 },
 "walk_for": {
@@ -16781,7 +16956,8 @@
 "splits",
 "scale",
 "warps",
-"v_both"
+"v_both",
+"fp16"
 ]
 },
 "walk_kernel": {
@@ -16796,7 +16972,8 @@
 "warps",
 "v_both",
 "max_vgprs",
-"min_occupancy"
+"min_occupancy",
+"dtype"
 ]
 }
 },
@@ -16909,6 +17086,8 @@
 },
 "annotations": {},
 "bf16": {},
+"fp16": {},
+"fp16_t": {},
 "fp32": {},
 "hk": {},
 "i32": {},
@@ -16927,7 +17106,8 @@
 "kv_splits",
 "q_tile",
 "cols",
-"step"
+"step",
+"dtype"
 ]
 },
 "paged_prefill_kernel": {
@@ -16952,7 +17132,8 @@
 "kv_order",
 "kv_splits",
 "pack",
-"rev"
+"rev",
+"dtype"
 ]
 },
 "q_tiles": {
@@ -16967,7 +17148,8 @@
 "head_dim",
 "group",
 "scale",
-"page"
+"page",
+"fp16"
 ]
 },
 "rocm_views": {
@@ -16982,7 +17164,8 @@
 "rows",
 "heads",
 "head_dim",
-"device"
+"device",
+"dtype"
 ]
 },
 "split_plan": {
@@ -17008,7 +17191,8 @@
 "head_dim",
 "page",
 "kv_block",
-"kv_order"
+"kv_order",
+"dtype"
 ]
 },
 "vt_pack_span": {
@@ -17678,6 +17862,16 @@
 "zero_offset",
 "dtype",
 "symmetric"
+]
+},
+"repack_quark": {
+"params": [
+"qweight",
+"scales",
+"group",
+"qzeros",
+"pack_reorder",
+"dtype"
 ]
 },
 "schedule_for": {
