@@ -10,6 +10,7 @@ To turn hk on in vLLM and check it, read [hk in vLLM](vllm.md) first. This page 
   - [FlyDSL's GEMM as an optional path](#flydsls-gemm-as-an-optional-path)
 - [The MoE patch](#the-moe-patch)
 - [The 4-bit patch](#the-4-bit-patch)
+- [The Quark W4A16 patch](#the-quark-w4a16-patch)
 - [The DeepSeek-V4.1 index launch](#the-deepseek-v41-index-launch)
 
 ## The SDPA patch: vision towers
@@ -526,6 +527,29 @@ with `RDNA3W4A16LinearKernel`, vLLM's HIP kernel on GPTQ's shuffled codes.
 ```bash
 HK_PATCH_VLLM=1 vllm serve <a GPTQ-Int4 checkpoint> --dtype float16    # HK_VLLM_GPTQ=0 turns it off
 ```
+
+## The Quark W4A16 patch
+
+AMD Quark int4 weight-only checkpoints (for example
+amd/Qwen3.8-27B-Quark-AWQ-INT4-W4A16) load through vLLM's `QuarkW4A16Int4`
+scheme, which hands each layer to the same MPLinearKernel GPTQ layers get. The
+int4 routes above hook AutoAWQ and AutoGPTQ, so they never see these layers;
+`hk/integration/vllm_quark.py` (`HK_VLLM_QUARK`) wraps
+`QuarkW4A16Int4.process_weights_after_loading` and `.apply_weights`:
+- **gfx1201** (`RDNAHybridW4A16LinearKernel`, on by default): after vLLM's
+  repack, hk reads its tensors in place. The fp16 batches vLLM would run on its
+  Triton GEMM go to hk's 4-bit forms, the decode GEMM up to 64 tokens and the
+  large-batch form above that; vLLM's own HIP skinny GEMM keeps its batches.
+- **gfx1100** (`RDNA3W4A16LinearKernel`, opt-in in 0.9.15): hk writes its
+  symmetric layout of Quark's codes first (`hk.ops.w4a16.repack_quark`), and
+  16-bit batches of 1-64 tokens take hk's decode GEMM.
+- Asymmetric checkpoints, other kernels, and shapes the forms do not take keep
+  vLLM's path; `vllm_quark.REFUSED` counts them by reason.
+
+Checked end to end on amd/Qwen3.8-27B-Quark-AWQ-INT4-W4A16 on one R9700 (fp16,
+TRITON_ATTN): GSM8K-200 equal to stock's. The measured numbers are in the
+[switch's evidence](integration.md#on-by-default-and-turning-it-off).
+`HK_VLLM_QUARK=0` turns the route off; `=1` turns it on where it is off by default.
 
 ## The DeepSeek-V4.1 index launch
 
