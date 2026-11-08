@@ -6,6 +6,8 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+**vLLM: Quark W4A16 on by default on gfx1100 too** (`vllm_quark`). One W7900D, amd/Qwen3.8-27B-Quark-AWQ-INT4-W4A16, 4 alternating rounds: TPOT 1.13x / 1.18x / 1.25x at 1 / 4 / 8 concurrent requests, TTFT level (prefill stays vLLM's there), GSM8K-200 equal.
+
 **MoE routes: a call after `revert()` no longer raises.** `vllm_moe.revert()` (and `vllm_moe_wna16`, `sglang_moe`) restored the engine's `try_get_optimal_moe_config`, but any module that had bound hk's wrapper by name kept it, and the wrapper then called the cleared original: `'NoneType' object is not callable` on the next MoE call. The wrapper now holds the original itself and passes it through once reverted; reverting one of two chained MoE routes leaves a working chain.
 
 **vLLM: AMD Quark W4A16 checkpoints on hk's 4-bit forms** (`vllm_quark`, on by default on gfx1201). A Quark int4 weight-only checkpoint (e.g. amd/Qwen3.8-27B-Quark-AWQ-INT4-W4A16) loads through vLLM's `QuarkW4A16Int4` onto the kernels GPTQ layers get. On gfx1201 the route runs the fp16 batches vLLM sends to its Triton GEMM on hk's forms in place, no second copy: at the checkpoint's group 128, 1.9-3.6x vLLM at 6-32 tokens and 1.13-1.30x at 128-4096 (prefill) on Qwen3.8-27B's shapes, the same error. End to end on one R9700 (amd/Qwen3.8-27B-Quark-AWQ-INT4-W4A16, 4 alternating rounds): TPOT at 8 concurrent requests 1.64x, TTFT at 512 / 2048 tokens 1.16x / 1.17x, level at 1 and 4, GSM8K-200 equal. On gfx1100 hk keeps a copy of Quark's codes in its symmetric layout (new `hk.ops.w4a16.repack_quark`) for 1-64 tokens; opt-in there (`HK_VLLM_QUARK=1`) until measured.
