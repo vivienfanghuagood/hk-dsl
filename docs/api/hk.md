@@ -195,8 +195,6 @@ Generate, compile and load. Returns the loaded extension module.
 Kernel.for_arch(self, arch: str, name: Optional[str] = None) -> Kernel
 ```
 
-*New after 0.9.16*
-
 This kernel built for `arch`: the same body, warps, grid, constexpr defaults and
 options (a specialization keeps its dtypes), its own traces and builds. `name=` renames
 it. What a test or a probe that targets another arch wants, in place of re-wrapping
@@ -258,8 +256,6 @@ something that will call it many times.
 ```python
 class hk.GenericKernel(fn: Callable, **kw: Any)
 ```
-
-*New after 0.9.16*
 
 A kernel with dtype parameters (`hk.Tensor[hk.T]`) and/or a `warps` argument: one
 definition, a specialization per (dtypes, warps) -- an ordinary Kernel, traced, built and
@@ -456,8 +452,6 @@ other op on it is refused when the kernel is translated).
 class hk.TypeVar(name: str)
 ```
 
-*New after 0.9.16*
-
 A dtype parameter: `hk.Tensor[hk.T]` (or a second one, `U = hk.TypeVar("U")`).
 
 A kernel whose tensors are annotated with one is a single definition for every dtype:
@@ -468,8 +462,6 @@ body the variable's name is the bound dtype: `hk.RT(T, 16, 64)`, `x.to(T)` (or r
 off a tensor: `a.dtype`).
 
 ### `hk.T`
-
-*New after 0.9.16*
 
 A dtype parameter: `hk.Tensor[hk.T]` (or a second one, `U = hk.TypeVar("U")`).
 
