@@ -10154,6 +10154,9 @@
 "gather_sgld_convrot": {
 "params": []
 },
+"gather_sgld_ditnorm": {
+"params": []
+},
 "gather_sgld_linear": {
 "params": []
 },
@@ -10233,6 +10236,11 @@
 ]
 },
 "judge_sgld_convrot": {
+"params": [
+"f"
+]
+},
+"judge_sgld_ditnorm": {
 "params": [
 "f"
 ]
@@ -11027,6 +11035,9 @@
 "CONVROT_HOME": {},
 "CONVROT_STATS": {},
 "DECISIONS": {},
+"DITNORM_FALLBACKS": {},
+"DITNORM_HOME": {},
+"DITNORM_STATS": {},
 "ENV": {},
 "LINEAR_BIAS": {},
 "LINEAR_HOME": {},
@@ -11043,6 +11054,7 @@
 "VAE_HOME": {},
 "VAE_STATS": {},
 "_BOOT": {},
+"_DITNORM_ORIG": {},
 "_LAST": {},
 "_LINEAR_ORIG": {},
 "_OFF": {},
@@ -11055,6 +11067,26 @@
 "_bucket": {
 "params": [
 "m"
+]
+},
+"_ditnorm_engine": {
+"params": [
+"mod",
+"residual",
+"x",
+"gate",
+"shift",
+"scale"
+]
+},
+"_ditnorm_why": {
+"params": [
+"mod",
+"residual",
+"x",
+"gate",
+"shift",
+"scale"
 ]
 },
 "_gemm_bias_op": {
@@ -11074,6 +11106,12 @@
 "x",
 "weight",
 "bias"
+]
+},
+"_ln_fits": {
+"params": [
+"mod",
+"x"
 ]
 },
 "_measure": {
@@ -11104,6 +11142,13 @@
 "rope"
 ]
 },
+"_vec": {
+"params": [
+"t",
+"d",
+"batch"
+]
+},
 "_version": {
 "params": [
 "t"
@@ -11114,6 +11159,9 @@
 "params": []
 },
 "apply_convrot": {
+"params": []
+},
+"apply_ditnorm": {
 "params": []
 },
 "apply_linear": {
@@ -11139,6 +11187,9 @@
 ]
 },
 "os": {},
+"revert_ditnorm": {
+"params": []
+},
 "revert_linear": {
 "params": []
 },
@@ -16201,6 +16252,7 @@
 "_FOLD_ROWS_BELOW": {},
 "_HALF_SPLIT": {},
 "_HALF_SPLIT_DTYPES": {},
+"_LNSS_KERNELS": {},
 "_NEG_INF": {},
 "_OFFSET_KERNELS": {},
 "_PER_LANE_HERE": {},
@@ -16266,6 +16318,28 @@
 "_grid": {
 "params": [
 "p"
+]
+},
+"_lnss_for": {
+"params": [
+"warps",
+"residual",
+"round_r",
+"r_dtype",
+"o_dtype",
+"affine"
+]
+},
+"_lnss_kernel": {
+"params": [
+"name",
+"dtype",
+"warps",
+"residual",
+"round_r",
+"r_dtype",
+"o_dtype",
+"affine"
 ]
 },
 "_mask": {
@@ -16474,6 +16548,21 @@
 "x",
 "eps",
 "out"
+]
+},
+"layernorm_scale_shift": {
+"params": [
+"x",
+"scale",
+"shift",
+"eps",
+"residual",
+"gate",
+"round_residual",
+"out_dtype",
+"residual_dtype",
+"weight",
+"bias"
 ]
 },
 "offset_kernel": {
