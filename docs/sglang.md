@@ -118,6 +118,7 @@ there with SGLang 0.5.23). Then generate as usual. hk then takes, by default:
 | `sgld_rope` | `HK_SGLD_ROPE` | the complex RoPE, bit for bit | Qwen-Image 2.1 | on | off |
 | `sgld_qknorm` | `HK_SGLD_QKNORM` | q / k RMSNorm + RoPE as one launch (from 0.9.12) | Qwen-Image 2.1 | on | off |
 | `sgld_vaeconv` | `HK_SGLD_VAECONV` | the VAE's conv3d as one conv2d (from 0.9.14; 2-frame calls before), which MIOpen would run on its slow reference kernel | Wan2.1 | on | on (from 0.9.14) |
+| `sgld_ditnorm` | `HK_SGLD_DITNORM` | the DiT block norms (residual + LayerNorm + scale / shift) as one launch each (from 0.9.16) | Wan2.1 | on | off |
 
 `HK_<SWITCH>=0` turns one off. The lossy ConvRot
 INT8 route stays opt-in (`HK_SGLD_CONVROT=1`). What each one replaces and what
@@ -159,8 +160,11 @@ SGLANG_USE_AITER=0 MIOPEN_FIND_MODE=FAST sglang generate --model-path Wan-AI/Wan
     --num-inference-steps 20 --attention-backend torch_sdpa --num-gpus 1 --save-output --output-path out
 ```
 
-The worker's line then counts the VAE's conv3d calls hk took, `vaeconv: conv2d
-692`, beside the attention calls. Some ROCm builds of SGLang send
+The worker's line then counts the DiT norms (`ditnorm: hk 3640`) and the VAE's
+conv3d calls hk took (`vaeconv: conv2d 692`) beside the attention calls. The
+line comes every `HK_SGLD_REPORT_S` seconds (60), and the worker exits without
+a last one, so the VAE count can miss the decode; a decode of seconds, not
+many minutes, is the sign it ran. Some ROCm builds of SGLang send
 Wan's fused norm layers to their CUDA kernel, and the first denoising step
 fails with `No module named 'cuda'`, with or without hk: that build needs
 SGLang's fix for it first. `sglang generate` exits 0 even when generation
