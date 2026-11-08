@@ -4,7 +4,19 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
-## Unreleased
+## 0.9.17
+
+hk-dsl 0.9.17: one `@hk.kernel` definition serves every dtype and warp count -- a tensor annotated
+`hk.Tensor[hk.T]` takes its dtype from the call, and `warps` is an ordinary keyword argument; the public
+scorecard gains its Radeon section. No change to the dialect (`hk-dialect-8`) or which routes are on by default.
+
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels below are the same files.
+
+    pip install hk_dsl-0.9.17-cp312-cp312-manylinux_2_35_x86_64.whl
+
+### Changes
 
 **One kernel for every dtype and warp count** (#345). A tensor annotated `hk.Tensor[hk.T]` takes its
 dtype from the call -- read from the first tensor annotated with it (every tensor sharing it must
@@ -17,6 +29,16 @@ take the same keywords. Old annotations, factories, `@hk.specialize` and `hk.ker
 their meaning. `hk.ops` builds `fused.silu_mul_kernel`, `quant.quantize_kernel` and
 `quant.dequantize_kernel` this way (their tables now hold the specializations, under new kernel
 names: one recompile each). docs/language.md, "One kernel for every dtype and warp count".
+
+**Documentation** (#343, #344). The scorecard's Radeon section: end-to-end serving on a W7900D and an R9700, same-process A/B against a fair stock. docs/sglang.md: the `sgld_ditnorm` row.
+
+### How this release was verified
+
+The MI355X CI cards were held by another user's workload, so the gfx950 and gfx950-vllm GPU tiers did not run on #345 or this release (the gfx942/gfx950 codegen builds in CI did), and the MI355X wheel smokes did not run; CI and the gfx1100 and gfx1201 GPU tiers did (a2, 2026-11-08). #345's launch overhead was measured on an MI355X (under 0.3 µs over a plain kernel).
+
+### All pull requests
+
+#342, #343, #344, #345.
 
 ## 0.9.16
 
