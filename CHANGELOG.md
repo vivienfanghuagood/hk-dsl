@@ -4,6 +4,8 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
+## Unreleased
+
 ## 0.9.19
 
 hk-dsl 0.9.19: on gfx1100, vLLM's Gemma-style RMSNorm runs on hk's fused (add+)RMSNorm in eager mode

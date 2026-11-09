@@ -2256,6 +2256,13 @@
 "subject"
 ]
 },
+"_read_dtypes": {
+"params": [
+"fn",
+"given",
+"args"
+]
+},
 "_resources": {
 "params": [
 "k",
@@ -2269,6 +2276,17 @@
 "args",
 "kw",
 "copies"
+]
+},
+"_shape_args": {
+"params": [
+"make"
+]
+},
+"_spec": {
+"params": [
+"k",
+"overrides"
 ]
 },
 "_spread": {
@@ -2289,6 +2307,12 @@
 "params": []
 },
 "_time": {},
+"_unbound_dtypes": {
+"params": [
+"fn",
+"given"
+]
+},
 "_where": {
 "params": [
 "e"
@@ -10331,6 +10355,9 @@
 "_mxfp8": {
 "params": []
 },
+"_norm": {
+"params": []
+},
 "_prefill": {
 "params": []
 },
@@ -10571,6 +10598,9 @@
 "gather_vllm_mxfp8": {
 "params": []
 },
+"gather_vllm_norm": {
+"params": []
+},
 "gather_vllm_prefill": {
 "params": []
 },
@@ -10681,6 +10711,11 @@
 ]
 },
 "judge_vllm_mxfp8": {
+"params": [
+"f"
+]
+},
+"judge_vllm_norm": {
 "params": [
 "f"
 ]
@@ -13068,6 +13103,29 @@
 ]
 },
 "status": {
+"params": []
+}
+},
+"hk.integration.vllm_norm": {
+"Callable": {},
+"Counter": {},
+"Optional": {},
+"STATS": {},
+"Tuple": {},
+"_HOME": {},
+"_ORIG": {},
+"__all__": {},
+"_compiling": {
+"params": []
+},
+"annotations": {},
+"apply": {
+"params": []
+},
+"revert": {
+"params": []
+},
+"stats": {
 "params": []
 }
 },
