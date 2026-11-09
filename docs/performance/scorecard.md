@@ -95,14 +95,26 @@ vLLM rows: vLLM on ROCm 7.14 (TheRock), torch 2.13. SGLang-Diffusion rows: SGLan
 | MiniCPM5-2B (hk 0.9.14) | TPOT, 1 / 4 / 8 concurrent (ms) | 7.90 / 9.29 / 10.66 | 7.92 / 8.76 / 9.16 | 1.00x (slightly worse) / 1.06x / 1.16x |
 | | TTFT 8k / 32k (ms) | 907 / 12,550 | 591 / 4,247 | 1.54x / 2.95x |
 | | GSM8K (1319, greedy) | 73.77% | 74.60% | not significant (McNemar p 0.42) |
-| MiniCPM-V-4.7 1B (hk 0.9.14) | TPOT, 1 / 4 / 8 concurrent (ms) | 21.5 / 22.3 / 27.2 | 21.3 / 22.2 / 27.3 | 1.01x / = / = |
+| MiniCPM-V-4.7 1B, eager (hk 0.9.14) | TPOT, 1 / 4 / 8 concurrent (ms) | 21.5 / 22.3 / 27.2 | 21.3 / 22.2 / 27.3 | 1.01x / = / = |
 | | TTFT 8k / 32k (ms) | 656 / 7,451 | 270 / 1,384 | 2.43x / 5.38x |
 | | GSM8K | 81.50% | 80.89% | not significant (p 0.42) |
+| MiniCPM-V-4.7 1B, eager: the `vllm_norm` route (hk 0.9.19), route off / on | TPOT, 1 / 4 / 8 concurrent (ms) | 22.39 / 22.56 / 21.99 | 16.81 / 18.22 / 17.58 | 1.33x / 1.24x / 1.25x |
+| | TTFT 8k (ms) | 358.1 | 334.5 | 1.07x |
+| | GSM8K (300, greedy) | 81.67% | 82.33% | not significant (p 0.80) |
 | MiniCPM-V-4.7 35B-A3B, 2 GPUs (hk 0.9.14) | TPOT, 1 / 4 / 8 concurrent (ms) | 61.8 / 63.1 / 73.3 | 61.2 / 62.0 / 64.5 | = / = / 1.14x |
 | | TTFT 8k / 32k (ms) | 2,277 / 18,070 | 1,575 / 6,957 | 1.45x / 2.60x |
 | | GSM8K | 95.22% | 95.83% | not significant (p 0.08); a second accuracy run is planned |
 | Wan2.1-T2V-1.3B, 832x480x81, 20 steps (hk 0.9.14) | seconds per video | 496.7 (496.5-497.5) | 187.1 (187.1-187.6) | 2.66x |
 | Qwen-Image 2.1, 1024x1024, 30 steps (hk 0.9.14) | seconds per image | 42.0 | 26.2 | 1.60x |
+
+**The `vllm_norm` rows** measure one route, not stock against all of hk. Both columns run hk 0.9.19 with its
+default-on routes; the left one turns `vllm_norm` off (`HK_VLLM_NORM=0`). MiniCPM-V-4.7's production engine
+arguments run it eager (`enforce_eager`), and in eager mode its Gemma RMSNorm runs as ~8 PyTorch kernels; the route
+runs it as one hk kernel. Under torch.compile the route stands aside, so a compiled deployment sees no change.
+- **Setup:** one process, the engine rebuilt per block, 6 alternating rounds, every range disjoint. The scorecard row's
+  production engine arguments (`enforce_eager`, TRITON_ATTN, 4,096 batched tokens), no TunableOp in either column.
+- **Ranges over the 6 rounds:** route off 20.57-23.67 / 21.29-22.74 / 21.12-23.43 ms, route on 16.66-17.05 /
+  17.83-18.83 / 17.04-19.79 ms; TTFT 8k 357.2-365.3 against 333.4-335.9 ms.
 
 Quality: Wan2.1, hk's video is 34.6-34.8 dB from stock's, the same as stock against itself across runs (34.6-34.8 dB). Qwen-Image 2.1,
 hk's image is 42.8 dB from stock's.
@@ -117,10 +129,19 @@ vLLM rows: vLLM on ROCm 7.14 (TheRock), torch 2.13. SGLang-Diffusion rows: upstr
 | | TTFT 512 / 2k tokens (ms) | 375 / 1,507 | 284 / 1,165 | 1.32x / 1.29x |
 | Qwen3.8-27B AWQ int4 (AMD Quark W4A16) (hk 0.9.16) | TPOT, 4 / 8 concurrent (ms) | 37.8 / 61.9 | 32.4 / 34.4 | 1.17x / 1.80x |
 | | TTFT 512 / 2k tokens (ms) | 333 / 1,401 | 274 / 1,122 | 1.22x / 1.25x |
+| MiniCPM-V-4.7 1B, eager: the `vllm_norm` route (hk 0.9.19 code, `HK_VLLM_NORM=1`), route off / on | TPOT, 1 / 4 / 8 concurrent (ms) | 21.41 / 22.49 / 22.85 | 16.80 / 18.01 / 19.13 | 1.27x / 1.25x / 1.20x |
+| | TTFT 2k / 8k (ms) | 75.6 / 352.2 | 67.6 / 321.0 | 1.12x / 1.10x |
+| | GSM8K (300, greedy) | 82.00% | 81.33% | not significant (p 0.79) |
 | Wan2.1-T2V-1.3B, 832x480x81, 20 steps (hk 0.9.14) | seconds per video | 283.6 (282.0-295.1) | 178.0 (177.4-190.0) | 1.59x |
 | Qwen-Image 2.1, 1024x1024, 30 steps (hk 0.9.14) | seconds per image | 27.4 (27.3-28.1) | 25.1 (25.0-25.1) | 1.09x |
 
-- **Single-request TPOT on R9700 is not quoted.** It is bimodal per engine build in both arms (about 29 ms or 37 ms,
+- **The `vllm_norm` row** is the same route A/B as on the W7900D: 6 alternating rounds in one process, engine rebuilt
+  per block, every range disjoint. The engine runs eager (`enforce_eager`, as MiniCPM-V-4.7 is served), TRITON_ATTN,
+  16k context. The route is on by default on gfx1201 from the next release (#366); on hk 0.9.19 it is
+  `HK_VLLM_NORM=1`. It was measured from the source tree at the route's merge, whose route and kernel code is the
+  same as the 0.9.19 wheel's. Ranges: route off 20.87-23.10 / 21.48-23.16 / 22.24-26.63 ms, route on 16.33-17.91 /
+  17.47-20.13 / 18.67-21.04 ms.
+- **Single-request TPOT on R9700 is not quoted** for the GPTQ / AWQ rows. It is bimodal per engine build in both arms (about 29 ms or 37 ms,
   depending on the build, not on hk); within a state hk and stock are equal (1.00x).
 - **One GPTQ round was discarded.** Another user's process ran inside its stock block; the row uses the other 5 of 6
   rounds.
