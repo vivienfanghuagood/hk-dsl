@@ -22,6 +22,12 @@ with hk-dsl, on the same GPU, played side by side at real speed. This directory 
        --last-frame-duration 1.5 demo.cast demo.gif
    ```
 
+**Why the two prompts differ by a few tokens** (32,752 and 32,783 in the README's round): every request gets a
+document of its own -- a unique first line and its own random shipping entries -- so that no request can hit
+the prefix cache of an earlier one. `record.py` sizes each document to 32,768 tokens within 64 (`DEMO_TOKENS`),
+not exactly, so each request's prompt length is its own; `demo.json` records it per request. 31 tokens is 0.1%
+of the prompt, against first tokens 7 s apart.
+
 The two arms are recorded one after the other in the same process (two engines at once would share the GPU),
 and played back together; every time on screen is the recorded one. The rendered round is named in the
 README's caption. The numbers the project quotes are the scorecard's, measured over rounds; the GIF shows
