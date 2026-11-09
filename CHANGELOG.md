@@ -4,7 +4,23 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
-## Unreleased
+## 0.9.18
+
+hk-dsl 0.9.18: a process can load as many hk kernels as it needs -- every kernel module is now a plain CPython
+extension, which removes a ceiling of about 250 kernels per process (torch 2.10's pybind11 took 4 thread-local keys a
+module); on gfx1201, SGLang-Diffusion's RoPE route (`sgld_rope`) is on by default; the remaining dtype / warps
+factories in `hk.ops` are one generic kernel each. No change to the dialect (`hk-dialect-8`).
+
+**After upgrading, the first use of each kernel rebuilds it once** (the module format changed, so kernels cached by an
+earlier version are not reused); later runs load from the cache as before.
+
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels below are the same files.
+
+    pip install hk_dsl-0.9.18-cp312-cp312-manylinux_2_35_x86_64.whl
+
+### Changes
 
 **A process loads as many hk kernels as it needs** (#353, issue #350). Every hk kernel is an
 extension module of its own, and they were pybind11 modules: with torch 2.10's pybind11 (the stock
@@ -17,9 +33,9 @@ flat), the same tensor checks and errors, and a cold compile about 2.8x faster w
 headers (W7900D: 7.2 -> 2.6 s median). `tests/hk/gpu/test_module_ceiling.py` loads 320 kernel
 modules in one process and checks no keys are taken.
 
-**SGLang-Diffusion on gfx1201: `sgld_rope` on by default.** Qwen-Image 2.1's complex RoPE on `hk.ops.rotary_pairs` is 6.4-8.2x SGLang's per call on an R9700, bit for bit. `sgld_linear` stays off there: hk's GEMM is 1.08-1.12x `F.linear` at the model's projections on gfx1201.
+**SGLang-Diffusion on gfx1201: `sgld_rope` on by default** (#352). Qwen-Image 2.1's complex RoPE on `hk.ops.rotary_pairs` is 6.4-8.2x SGLang's per call on an R9700, bit for bit. `sgld_linear` stays off there: hk's GEMM is 1.08-1.12x `F.linear` at the model's projections on gfx1201.
 
-**SGLang-Diffusion: `sgld_qknorm` on SGLang 0.5.23.** 0.5.23 rewrote Qwen-Image 2.1's `apply_qk_norm_rope`; off CUDA it still falls back to the norm then `apply_rope`, now spelled `apply_rope(norm(x), rope)`. The route's engine contract looked for the old spelling only and turned the route off there; it now reads both.
+**SGLang-Diffusion: `sgld_qknorm` on SGLang 0.5.23** (#346). 0.5.23 rewrote Qwen-Image 2.1's `apply_qk_norm_rope`; off CUDA it still falls back to the norm then `apply_rope`, now spelled `apply_rope(norm(x), rope)`. The route's engine contract looked for the old spelling only and turned the route off there; it now reads both.
 
 **hk.ops: the remaining dtype / warps factories as one kernel each** (#351). fused's strip silu_mul
 and rotary kernels (one definition each without and with positions), quant's strip quantize and
@@ -28,6 +44,12 @@ and `offset_kernel`'s offset variants) are `hk.Tensor[hk.T]` + `warps` definitio
 the specializations under the same keys. The generated C++ of all 2110 table kernels, gfx1100 and
 gfx950, is byte-identical to the factories' but for the name (and of 20 offset kernels); the new
 names cost one recompile each.
+
+**Tests** (#349). #345's launch tests run in a GPU-tier group of their own.
+
+### All pull requests
+
+#346, #348, #349, #351, #352, #353.
 
 ## 0.9.17
 
