@@ -1,6 +1,6 @@
 #pragma once
 /*
- * A pybind entry point that spends its time on the launch.
+ * A Python entry point that spends its time on the launch.
  *
  * `pyutils.cuh`'s `from_object` is written for a benchmark harness, where the
  * kernel runs for milliseconds and the wrapper is free. It is not free for the
@@ -41,10 +41,11 @@
  */
 
 #include "pyutils/util.cuh"
-#include <pybind11/pybind11.h>
+#include <Python.h>
 
 #include <cstdint>
 #include <stdexcept>
+#include <utility>
 
 namespace kittens {
 namespace py {
@@ -67,7 +68,7 @@ inline const attr_keys &keys() { static const attr_keys k; return k; }
 [[noreturn]] inline void fail(const char *what) {
     // The pending Python error, if any, is less informative than `what` --
     // "AttributeError: 'int' object has no attribute 'shape'" against "hk
-    // expected a torch.Tensor". Clear it so pybind reports the throw.
+    // expected a torch.Tensor". Clear it so the entry point reports the throw.
     PyErr_Clear();
     throw std::runtime_error(what);
 }
@@ -126,8 +127,7 @@ inline int strided_rows(PyObject *o, Py_ssize_t dims, const int s[4]) {
     return (int)row;
 }
 
-template<ducks::gl::all GL> GL to_gl(pybind11::handle h) {
-    PyObject *o = h.ptr();
+template<ducks::gl::all GL> GL to_gl(PyObject *o) {
     const attr_keys &k = keys();
 
     PyObject *shape = PyObject_GetAttr(o, k.shape);
@@ -164,47 +164,70 @@ template<ducks::gl::all GL> GL to_gl(pybind11::handle h) {
     return make_gl<GL>(ptr, s[0], s[1], s[2], s[3], row_stride);
 }
 
-template<typename T> struct from_object {
-    static T make(pybind11::handle h) { return pybind11::cast<T>(h); }
-};
-template<ducks::gl::all GL> struct from_object<GL> {
-    static GL make(pybind11::handle h) { return to_gl<GL>(h); }
+template<typename> struct member_of;
+template<typename MT, typename T> struct member_of<MT T::*> { using type = MT; };
+
+/* The globals a call's arguments make, one tensor a member in declaration order. Every member
+ * of a generated `globals` is a tensor (scaffold._members). */
+template<typename TGlobal, auto... members> struct binder {
+    template<std::size_t... I>
+    static TGlobal make(PyObject *const *args, std::index_sequence<I...>) {
+        return TGlobal{to_gl<typename member_of<decltype(members)>::type>(args[I])...};
+    }
+    static TGlobal make(PyObject *const *args) {
+        return make(args, std::make_index_sequence<sizeof...(members)>{});
+    }
 };
 
-template<typename> struct trait;
-template<typename MT, typename T> struct trait<MT T::*> {
-    using member_type = MT;
-    using type = T;
-};
-/* `handle` and not `object`: pybind borrows the argument either way, and
- * `object` costs an incref/decref pair per tensor per launch for a reference
- * the caller already holds for the duration of the call. */
-template<typename> using handle = pybind11::handle;
+inline PyObject *raised(const std::exception &e) {
+    if (!PyErr_Occurred()) PyErr_SetString(PyExc_RuntimeError, e.what());
+    return nullptr;
+}
 
-template<auto function, typename TGlobal>
-static void bind_function(auto m, auto name, auto TGlobal::*... member_ptrs) {
-    m.def(name, [](handle<decltype(member_ptrs)>... args) {
-        TGlobal g {
-            from_object<typename trait<decltype(member_ptrs)>::member_type>
-                ::make(args)...
-        };
+inline bool count_ok(Py_ssize_t nargs, Py_ssize_t want) {
+    if (nargs == want) return true;
+    PyErr_Format(PyExc_TypeError, "hk: the kernel takes %zd arguments, got %zd", want, nargs);
+    return false;
+}
+
+/* A kernel's entry point, as a plain CPython function (METH_FASTCALL): no pybind11.
+ *
+ * Every hk kernel is an extension module of its own, and pybind11's module setup takes
+ * thread-specific-storage keys -- four a module with torch 2.10's bundled pybind11, of the 1024
+ * a process has -- so a process that loaded ~250 kernels aborted in the next one's import
+ * (issue #350). The module is one function, taking tensors it converts itself (to_gl), so it
+ * needs none of pybind11: errors are what they were (a C++ exception raises RuntimeError with
+ * its message, a wrong argument count TypeError), the GIL is held as it was, and the call does
+ * less (no pybind dispatcher in front of it). */
+template<auto function, typename TGlobal, auto... members>
+PyObject *entry(PyObject *, PyObject *const *args, Py_ssize_t nargs) {
+    if (!count_ok(nargs, sizeof...(members))) return nullptr;
+    try {
+        TGlobal g = binder<TGlobal, members...>::make(args);
         function(g);
-    });
+    } catch (const std::exception &e) {
+        return raised(e);
+    }
+    Py_RETURN_NONE;
 }
 
 /* The same entry point with a trailing stream, a hipStream_t passed as an
  * integer: the caller's (torch's current stream, from Python), so the launch
  * is ordered against the caller's work and a CUDA graph can capture it. The
- * pybind module links no torch, so it cannot ask for that stream itself. */
-template<auto function, typename TGlobal>
-static void bind_function_on_stream(auto m, auto name, auto TGlobal::*... member_ptrs) {
-    m.def(name, [](handle<decltype(member_ptrs)>... args, std::uintptr_t stream) {
-        TGlobal g {
-            from_object<typename trait<decltype(member_ptrs)>::member_type>
-                ::make(args)...
-        };
-        function(g, reinterpret_cast<hipStream_t>(stream));
-    });
+ * module links no torch, so it cannot ask for that stream itself. */
+template<auto function, typename TGlobal, auto... members>
+PyObject *entry_on_stream(PyObject *, PyObject *const *args, Py_ssize_t nargs) {
+    constexpr Py_ssize_t n = sizeof...(members);
+    if (!count_ok(nargs, n + 1)) return nullptr;
+    const unsigned long long stream = PyLong_AsUnsignedLongLong(args[n]);
+    if (stream == (unsigned long long)-1 && PyErr_Occurred()) return nullptr;
+    try {
+        TGlobal g = binder<TGlobal, members...>::make(args);
+        function(g, reinterpret_cast<hipStream_t>(static_cast<std::uintptr_t>(stream)));
+    } catch (const std::exception &e) {
+        return raised(e);
+    }
+    Py_RETURN_NONE;
 }
 
 } // namespace fast

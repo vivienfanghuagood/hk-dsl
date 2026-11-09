@@ -44,8 +44,8 @@ def load(so_path: Path, module_name: str) -> ModuleType:
         raise ImportError(
             f"{so_path} failed to import as {module_name!r}: {e}\n"
             f"If this says 'does not define module export function', the "
-            f"PYBIND11_MODULE name and the .so basename disagree -- that is a "
-            f"codegen bug, not a build problem."
+            f"module's PyInit_ name (HK_MODULE_NAME) and the .so basename disagree "
+            f"-- that is a codegen bug, not a build problem."
         ) from e
     _loaded[key] = mod
     return mod

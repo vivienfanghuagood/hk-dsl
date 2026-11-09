@@ -47,7 +47,7 @@ def _err(got, a, b):
 def test_the_entry_point_takes_the_stream():
     k = gemm_cdna.kernel_for(gemm_cdna.DEFAULT)
     src = k.source()
-    assert "bind_function_on_stream<launch_on>" in src
+    assert "entry_on_stream<launch_on, globals" in src
     assert scaffold.takes_stream(current_arch())
 
 

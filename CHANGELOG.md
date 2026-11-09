@@ -6,6 +6,17 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+**A process loads as many hk kernels as it needs** (#PR, issue #350). Every hk kernel is an
+extension module of its own, and they were pybind11 modules: with torch 2.10's pybind11 (the stock
+rocm/pytorch 7.2.3 image) each took four pthread thread-specific-storage keys of a process's 1024,
+so a process aborted ("Fatal Python error: Aborted", or "could not initialize the TSS key") after
+~250 kernels -- measured on gfx950 and gfx1201; a long-lived vLLM or SGLang process with many hk
+routes could hit it. A kernel's module is now a plain CPython extension with one METH_FASTCALL
+entry (include/pyutils/hk_bind.cuh): no keys (400 distinct kernels in one gfx950 process, keys
+flat), the same tensor checks and errors, and a cold compile about 2.8x faster without pybind11's
+headers (W7900D: 7.2 -> 2.6 s median). `tests/hk/gpu/test_module_ceiling.py` loads 320 kernel
+modules in one process and checks no keys are taken.
+
 **SGLang-Diffusion: `sgld_qknorm` on SGLang 0.5.23.** 0.5.23 rewrote Qwen-Image 2.1's `apply_qk_norm_rope`; off CUDA it still falls back to the norm then `apply_rope`, now spelled `apply_rope(norm(x), rope)`. The route's engine contract looked for the old spelling only and turned the route off there; it now reads both.
 
 **hk.ops: the remaining dtype / warps factories as one kernel each** (#351). fused's strip silu_mul

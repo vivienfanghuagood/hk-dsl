@@ -265,12 +265,13 @@ two schedules are a tie -- but a stricter bar for shipping a record (as
   GEMMs can be told to do; the gfx950 misses above need a kernel (stream-K,
   a 192-wide macro tile, a pingpong that hides its prologue) before any
   search can reach them.
-- **Candidates launch through code objects.** Every hk kernel loaded as a
-  pybind extension module takes thread-specific-storage keys, and a process
-  has 1024: a process that loads a few hundred aborts ("thread_specific_storage
+- **Candidates launch through code objects.** When hk kernels were pybind11
+  extension modules, each took thread-specific-storage keys, of 1024 a process:
+  a process that loaded a few hundred aborted ("thread_specific_storage
   constructor: could not initialize the TSS key") -- one gfx950 search in the
-  rocm/pytorch 7.2.3 image did, and two gfx1100 searches in one process. So the
-  search launches its candidates as device-only code objects
+  rocm/pytorch 7.2.3 image did, and two gfx1100 searches in one process. The
+  modules take none now (issue #350), and the search still launches its
+  candidates as device-only code objects
   (`HK_LAUNCH=codeobj`, for the search only; `bench/tune/run.py` sets it for
   its process): the same device code and device time, no module a kernel, a
   fifth of the compile (a gfx1100 search went from ~60 s to 14-19 s of wall
