@@ -25,9 +25,7 @@ from hk.target import gfx950  # noqa: E402
 
 
 def _for_950(k):
-    return hk.kernel(k.fn, arch="gfx950", warps=k.warps, grid=k.grid_fn,
-                     name=k.name + "_950", defines=getattr(k, "defines", None),
-                     noalias=k.noalias, preload=k.preload)
+    return k.for_arch("gfx950", name=k.name + "_950")
 
 
 #: (kernel, constexprs): each kind at its 4096-column bf16 plan, a bounded

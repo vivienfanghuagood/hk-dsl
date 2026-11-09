@@ -260,30 +260,27 @@ def dequantize_kernel(q: hk.Tensor[i8], s: hk.Tensor[fp32], o: hk.Tensor[T], *, 
 
 
 
-def _strip_quantize_kernel(name: str, dtype, warps: int):
-    """quantize on a strip (hk.RS), as norm._strip_kernel: one workgroup a
+@hk.kernel(name="strip_quantize", noalias=True, grid=lambda p: (p.x.rows, 1, 1))
+def strip_quantize_kernel(x: hk.Tensor[T], q: hk.Tensor[i8], s: hk.Tensor[fp32], *, warps=1,
+                          CHUNKS=1, RUN=8, EXACT=1):
+    """quantize on a strip (hk.RS), as norm's strip kernels: one workgroup a
     row, warp w holding columns [w*CW, (w+1)*CW), the row read once and any
     row count. A run past the row's end loads zero, which no absmax sees."""
-    def body(x: hk.Tensor[dtype], q: hk.Tensor[i8], s: hk.Tensor[fp32], *,
-             CHUNKS=1, RUN=8, EXACT=1):
-        cw = CHUNKS * hk.arch.target().wave * RUN
-        S = hk.RS(fp32, 1, cw, RUN)
-        row = hk.arch.block_idx.x
-        c0 = hk.arch.warp_id() * cw if warps > 1 else 0
-        bounded = not EXACT
-        v = x.at[row, c0].load(S, bounded=bounded)
-        amax = cross_warp(v.abs().max(axis=1), "max", warps)
-        amax.maximum(_TINY, into=amax)
-        inv = hk.full(hk.col_vec(S), 127.0) / amax
-        v *= inv
-        q.at[row, c0].store(v, bounded=bounded)
-        amax *= 1.0 / 127.0
-        # One row, so one entry, which every lane holds after the butterfly:
-        # uniform by construction.
-        s[hk.elem_coord(0, 0, 0, row)].store_scalar(as_vec(amax, S, uniform=True))
-
-    return hk.kernel(body, warps=warps, grid=lambda p: (p.x.rows, 1, 1), name=name,
-                     noalias=True)
+    cw = CHUNKS * hk.arch.target().wave * RUN
+    S = hk.RS(fp32, 1, cw, RUN)
+    row = hk.arch.block_idx.x
+    c0 = hk.arch.warp_id() * cw if warps > 1 else 0
+    bounded = not EXACT
+    v = x.at[row, c0].load(S, bounded=bounded)
+    amax = cross_warp(v.abs().max(axis=1), "max", warps)
+    amax.maximum(_TINY, into=amax)
+    inv = hk.full(hk.col_vec(S), 127.0) / amax
+    v *= inv
+    q.at[row, c0].store(v, bounded=bounded)
+    amax *= 1.0 / 127.0
+    # One row, so one entry, which every lane holds after the butterfly:
+    # uniform by construction.
+    s[hk.elem_coord(0, 0, 0, row)].store_scalar(as_vec(amax, S, uniform=True))
 
 
 _DTYPES = {"bf16": bf16, "fp16": fp16, "fp32": fp32}
@@ -299,8 +296,7 @@ del _s, _dt, _w
 
 #: (dtype suffix, warps) -> the strip quantize. CHUNKS, RUN and EXACT are
 #: constexprs, so one entry covers every width.
-STRIP_KERNELS = {f"strip_quantize_{_s}_w{_w}": _strip_quantize_kernel(
-                     f"strip_quantize_{_s}_w{_w}", _dt, _w)
+STRIP_KERNELS = {f"strip_quantize_{_s}_w{_w}": strip_quantize_kernel.variant(T=_dt, warps=_w)
                  for _s, _dt in _DTYPES.items() for _w in WARP_COUNTS}
 
 #: Where quantize runs on strips: gfx950, measured there (scoreboard.py

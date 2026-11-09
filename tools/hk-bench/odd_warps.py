@@ -67,7 +67,7 @@ def norm_case(kind, rows, cols):
     xv, ov = (norm._view(t, rows, cols, FOLD) for t in (x, o))
     v, skipped = {}, []
     for w, tpw in SPLITS:
-        k = norm._row_reduce_kernel(f"{kind}_bf16_w{w}", norm.bf16, kind, w)
+        k = norm.ROW_REDUCE[kind].variant(T=norm.bf16, warps=w)
         c = {"TPW": tpw, "FOLD": FOLD, "EXACT": int(norm._exact(cols // FOLD, w, tpw))}
         if kind != "softmax":
             c["EPS"] = 1e-6

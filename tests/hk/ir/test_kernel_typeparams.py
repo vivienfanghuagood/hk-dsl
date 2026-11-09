@@ -171,3 +171,29 @@ def test_for_arch_keeps_a_specialization_bound():
     assert on.trace().arch == "gfx950" and on.source() != v.source()
     g = scale.for_arch("gfx950")
     assert isinstance(g, hk.GenericKernel) and g.variant(T=hk.bf16).arch == "gfx950"
+
+
+def test_the_ops_tables_hold_specializations_of_one_kernel_each():
+    from hk.ops import fused, norm, quant
+
+    cases = [(fused.KERNELS["silu_mul_fp16_w4"], fused.silu_mul_kernel, hk.fp16, 4),
+             (fused.STRIP_KERNELS["strip_silu_mul_bf16_w2"], fused.strip_silu_mul_kernel, hk.bf16, 2),
+             (fused.ROTARY_KERNELS["rotary_fp16_w8_pos"], fused.ROTARY[True], hk.fp16, 8),
+             (fused.ROTARY16_KERNELS["rotary16_bf16_w4"], fused.ROTARY16[False], hk.bf16, 4),
+             (fused.ROTARY_HALVES_KERNELS["rotary_halves_bf16_w2"], fused.ROTARY_HALVES[False], hk.bf16, 2),
+             (quant.STRIP_KERNELS["strip_quantize_fp32_w1"], quant.strip_quantize_kernel, hk.fp32, 1),
+             (norm.KERNELS["rms_bf16_w5"], norm.ROW_REDUCE["rms"], hk.bf16, 5),
+             (norm.KERNELS["addrmsw_fp16_w3"], norm.RMS_WEIGHTED["addrmsw"][2], hk.fp16, 3),
+             (norm.STRIP_KERNELS["strip_layer_bf16_w8"], norm.STRIP["layer"], hk.bf16, 8)]
+    for k, g, dt, w in cases:
+        assert isinstance(g, hk.GenericKernel) and k is g.variant(T=dt, warps=w), k.name
+        assert k.name == f"{g.name}__T{dt.name}_warps{w}"
+
+
+def test_an_offset_norm_is_a_specialization_of_its_own_kernel():
+    from hk.ops import norm
+
+    k = norm.offset_kernel("rmsw_bf16_w4", 1.0)
+    assert k.name == "rmsw_wo1__Tbf16_warps4" and k.warps == 4
+    assert norm.offset_kernel("rmsw_bf16_w4", 1.0) is k and norm.offset_kernel("rmsw_bf16_w4", 0) is \
+        norm.KERNELS["rmsw_bf16_w4"]
