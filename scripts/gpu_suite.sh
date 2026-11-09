@@ -43,7 +43,9 @@ group fence  $G/test_fenced.py
 # hk.Tensor[hk.T] / warps launches (#345): its own process. In the first rest share it added ~a dozen
 # modules ahead of test_mxfp8_gemm and that process aborted on gfx950 (the TSS-key limit, below).
 group typeparams $G/test_kernel_typeparams_launch.py
-rest=$(ls $G/test_*.py | grep -v -E "test_(gemm|autotune|attn|sdpa|decode_gemm|paged|load_scalar|phase2|target_rmsnorm|elementwise|bounded|strided|while|indexed|torch_op|engine|vllm_gemm|flydsl_gemm|moe_a8w4|vllm_moe_a8w4|moe_w4|fenced|kernel_typeparams_launch|templates_[a-z]+|doc_[a-z_]+)\.py")
+# 320 kernel modules in one process (issue #350): its own, so they burden no other test.
+group modceil $G/test_module_ceiling.py
+rest=$(ls $G/test_*.py | grep -v -E "test_(gemm|autotune|attn|sdpa|decode_gemm|paged|load_scalar|phase2|target_rmsnorm|elementwise|bounded|strided|while|indexed|torch_op|engine|vllm_gemm|flydsl_gemm|moe_a8w4|vllm_moe_a8w4|moe_w4|fenced|kernel_typeparams_launch|module_ceiling|templates_[a-z]+|doc_[a-z_]+)\.py")
 # Every kernel a test builds is a pybind module of its own, each takes one of a process's 1024
 # pthread TSS keys, and one process ran out ("could not initialize the TSS key") once gfx950's
 # strips had preloaded twins: the rest in contiguous shares, two on one GPU and two a GPU on

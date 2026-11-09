@@ -107,35 +107,44 @@ def takes_stream(arch: str) -> bool:
 
 
 def pybind_module(ir: "TracedKernel") -> str:
-    """A self-contained pybind11 extension exporting one function, `ir.name`,
+    """A self-contained Python extension exporting one function, `ir.name`,
     that takes the tensor parameters positionally in declaration order, and
-    on CDNA the stream after them (`takes_stream`)."""
+    on CDNA the stream after them (`takes_stream`).
+
+    A plain CPython module (`PyModuleDef`, one METH_FASTCALL function from
+    include/pyutils/hk_bind.cuh), not a pybind11 one: every kernel is a module
+    of its own, and pybind11's module setup takes thread-specific-storage keys
+    (four a module with torch 2.10's pybind11), so a process aborted after
+    ~250 kernels (issue #350). The scaffold's name, "pybind", is kept: it is
+    the entry point's name everywhere else (Kernel.source(scaffold=...))."""
     _no_strided(ir, "the pybind module")
     src = ir.cpp(_includes(ir, '"pyutils/hk_bind.cuh"'))
+    members = _members(ir)
     if takes_stream(ir.arch):
-        bind = (f'    kittens::py::fast::bind_function_on_stream<launch_on>(m, '
-                f'"{ir.name}", {_members(ir)});')
+        fn = f"kittens::py::fast::entry_on_stream<launch_on, globals, {members}>"
     else:
-        bind = (f'    kittens::py::fast::bind_function<launch>(m, "{ir.name}", '
-                f'{_members(ir)});')
+        fn = f"kittens::py::fast::entry<launch, globals, {members}>"
     lines = [
         src,
         f"#ifndef {MODULE_NAME_MACRO}",
         f"#define {MODULE_NAME_MACRO} {ir.name}",
         "#endif",
+        "#define HK_STR_(x) #x",
+        "#define HK_STR(x) HK_STR_(x)",
+        "#define HK_PYINIT_(n) PyInit_##n",
+        "#define HK_PYINIT(n) HK_PYINIT_(n)",
         "",
-        f"PYBIND11_MODULE({MODULE_NAME_MACRO}, m) {{",
-        # bind_function rather than bind_kernel: the latter re-derives the
-        # launch inline, which would duplicate the dynamic-LDS attribute logic
-        # that `launch` already has and that the torch path also needs.
-        #
-        # `py::fast` rather than `py` -- pyutils.cuh's converter spends eleven
-        # Python operations and three std::strings per tensor, which is free
-        # behind a millisecond kernel and is not free behind a sixty-
-        # microsecond one. See include/pyutils/hk_bind.cuh for what it drops
-        # and what it keeps.
-        bind,
-        "}",
+        # `py::fast` -- pyutils.cuh's converter spends eleven Python operations
+        # and three std::strings per tensor, which is free behind a millisecond
+        # kernel and is not free behind a sixty-microsecond one. See
+        # include/pyutils/hk_bind.cuh for what it drops and what it keeps.
+        "static PyMethodDef hk_methods[] = {",
+        f'    {{"{ir.name}", (PyCFunction)(void (*)(void)) &{fn}, METH_FASTCALL, nullptr}},',
+        "    {nullptr, nullptr, 0, nullptr},",
+        "};",
+        f"static PyModuleDef hk_module = {{PyModuleDef_HEAD_INIT, HK_STR({MODULE_NAME_MACRO}), "
+        "nullptr, -1, hk_methods};",
+        f"PyMODINIT_FUNC HK_PYINIT({MODULE_NAME_MACRO})(void) {{ return PyModule_Create(&hk_module); }}",
     ]
     return "\n".join(lines) + "\n"
 

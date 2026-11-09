@@ -86,7 +86,7 @@ def test_the_kernel_body_is_independent_of_the_module_scaffold():
     """Phase 6 swaps pybind for TORCH_LIBRARY. If the two were entangled the
     torch build would be a second emitter, and the second one would drift."""
     bare = add2.source(scaffold="bare")
-    assert "PYBIND11_MODULE" not in bare
+    assert "PyModuleDef" not in bare and "PyInit_" not in bare
     body = "void add2_kernel(const globals g) {"
     assert body in bare and body in add2.source(scaffold="pybind")
 
