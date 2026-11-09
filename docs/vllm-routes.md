@@ -551,6 +551,35 @@ TRITON_ATTN) and on one W7900D: GSM8K-200 equal to stock's on both. The measured
 [switch's evidence](integration.md#on-by-default-and-turning-it-off).
 `HK_VLLM_QUARK=0` turns the route off; `=1` turns it on where it is off by default.
 
+## The Gemma RMSNorm route
+
+vLLM's `GemmaRMSNorm` -- y = x_hat * (1 + w), the norm of Gemma, of the Qwen3.5 family and of
+MiniCPM-V-4.7's text models -- has no fused kernel on CUDA or ROCm: its `forward_cuda` is its
+`forward_native`, vLLM IR ops that run as PyTorch ops. Under torch.compile inductor fuses them; a
+model served eager (`enforce_eager`, as MiniCPM-V-4.7's production configuration is) runs every
+norm as about eight kernels, and a decode step at one request is bound by their launches:
+MiniCPM-V-4.7-1B issues ~1060 kernels a token, 61 of them norms of ~8 ops, and the GPU idles ~70%
+of the step. (`compilation_config.custom_ops=["+rms_norm"]` does not reach this class.)
+
+`hk/integration/vllm_norm.py` (`HK_VLLM_NORM`, on by default on gfx1100) wraps
+`GemmaRMSNorm.forward_cuda`: hk's weighted norm kernels at weight offset 1 (the stored w, the one
+added in fp32 inside the kernel, as vLLM's math does), the residual add fused, out of place as
+vLLM's native path ((y, x + residual) or y), on torch's current stream. Calls while torch.compile
+traces, and inputs hk's kernels do not take (not a contiguous 16-bit tensor, a weight of another
+dtype or shape, a residual unlike x), keep vLLM's path; `vllm_norm.STATS` counts both by reason.
+
+Checked on MiniCPM-V-4.7 with its production args on W7900Ds, hk 0.9.18, the route off and on,
+one process, engines rebuilt per block, 4 alternating rounds (ranges disjoint):
+
+| model | TPOT at 1 / 4 / 8 requests | TTFT 8k | GSM8K-300 (off / on) |
+|---|---|---|---|
+| 1B | 21.39 -> 16.70 ms (1.28x) / 1.21x / 1.24x | 1.07x | 81.7 / 82.7% (McNemar p 0.65) |
+| 35B-A3B, TP2 | 59.93 -> 52.28 ms (1.15x) / 1.11x / 1.10x | 1.06x | 96.0 / 97.0% (p 0.25) |
+
+On the real calls of a request every output is within 1 bf16 ulp of vLLM's native path (0.10% of
+a call's elements at most) and every residual bit-equal. Qwen3.8-27B also has GemmaRMSNorm but is
+served compiled, where the route leaves the norm to inductor. `HK_VLLM_NORM=0` turns the route off.
+
 ## The DeepSeek-V4.1 index launch
 
 With `--monokernel`, vLLM runs a DeepSeek-V4.1 decode step's backbone layer

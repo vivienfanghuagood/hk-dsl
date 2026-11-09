@@ -113,6 +113,12 @@ def _prefill() -> Tuple[str, Callable]:
     return vllm_prefill.apply(), vllm_prefill.revert
 
 
+def _norm() -> Tuple[str, Callable]:
+    from . import vllm_norm  # noqa: PLC0415
+
+    return vllm_norm.apply(), vllm_norm.revert
+
+
 def _moe() -> Tuple[str, Callable]:
     from . import vllm_moe  # noqa: PLC0415
 
@@ -132,7 +138,7 @@ APPLY: Dict[str, Callable[[], Tuple[str, Callable]]] = {
     "vllm_moe_a8w4": _moe_a8w4, "vllm_mxfp8": _mxfp8,
     "vllm_dsv41_index": _dsv41_index, "vllm_moe": _moe, "vllm_moe_wna16": _moe_wna16,
     "vllm_sdpa": _sdpa,
-    "vllm_sparse_mla": _sparse_mla, "vllm_prefill": _prefill,
+    "vllm_sparse_mla": _sparse_mla, "vllm_prefill": _prefill, "vllm_norm": _norm,
 }
 
 

@@ -309,6 +309,27 @@ def judge_vllm_sdpa(f: dict) -> List[str]:
                    "(vit_attn_wrappers.apply_sdpa)")
 
 
+def gather_vllm_norm() -> dict:
+    from vllm.model_executor.layers import layernorm as L  # noqa: PLC0415
+
+    from . import vllm_norm  # noqa: PLC0415
+
+    cls = getattr(L, "GemmaRMSNorm", None)
+    if cls is None:
+        return {"has_gemma_rms_norm": False}
+    fn = vllm_norm._ORIG[1] if vllm_norm._ORIG else cls.forward_cuda
+    return {"has_gemma_rms_norm": True, "forward_cuda": names(fn), "init": names(cls.__init__)}
+
+
+def judge_vllm_norm(f: dict) -> List[str]:
+    if not f["has_gemma_rms_norm"]:
+        return ["no GemmaRMSNorm in vllm.model_executor.layers.layernorm"]
+    return (_expect(f["forward_cuda"] == ["self", "x", "residual"],
+                    f"GemmaRMSNorm.forward_cuda takes {f['forward_cuda']}, not (self, x, residual)")
+            + _expect(f["init"][:3] == ["self", "hidden_size", "eps"],
+                      f"GemmaRMSNorm.__init__ takes {f['init']}: weight / variance_epsilon may have moved"))
+
+
 def gather_vllm_prefill() -> Optional[dict]:
     from . import switches  # noqa: PLC0415
 
@@ -637,7 +658,7 @@ SPLIT: Dict[str, tuple] = {
     r: (globals()[f"gather_{r}"], globals()[f"judge_{r}"]) for r in (
         "vllm_mxfp8", "vllm_moe_a8w4", "vllm_int4", "vllm_gptq", "vllm_quark", "vllm_gemm", "vllm_moe",
         "vllm_moe_wna16", "vllm_sdpa", "vllm_backend", "vllm_dsv41_index", "vllm_sparse_mla",
-        "vllm_prefill", "sglang_linear", "sglang_norm", "sglang_moe", "sgld_attn", "sgld_linear",
+        "vllm_prefill", "vllm_norm", "sglang_linear", "sglang_norm", "sglang_moe", "sgld_attn", "sgld_linear",
         "sgld_convrot", "sgld_vaeconv", "sgld_rope", "sgld_qknorm", "sgld_ditnorm")}
 
 
