@@ -68,6 +68,8 @@ COVERAGE = {
         "test_route_paths.py::test_sgld_qknorm_takes_qwen_image_21s_qk_norm_and_rope_through_hk",
     ("sgld_rope", "gfx1100"):
         "test_route_paths.py::test_sgld_rope_takes_qwen_image_21s_rope_through_hk_and_reverts",
+    ("sgld_rope", "gfx1201"):
+        "test_route_paths.py::test_sgld_rope_takes_qwen_image_21s_rope_through_hk_and_reverts",
     ("vllm_prefill", "gfx1100"):
         "test_paged_prefill.py::test_vllm_prefill_takes_a_triton_attn_batch_and_matches",
     ("vllm_prefill", "gfx1201"):

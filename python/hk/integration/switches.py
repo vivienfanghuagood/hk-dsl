@@ -178,7 +178,9 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "(a bias in the GEMM's store)",
        "Qwen-Image 2.1 with attention: 40.0 dB from stock and closer to fp32 than stock "
        "(history 46); Wan2.1 832x480x81's biased projections 1.22-1.26x F.linear, same error vs "
-       "fp32: 221.4 -> 211.4 s a video (1.047x, same process), inside stock's run-to-run spread",
+       "fp32: 221.4 -> 211.4 s a video (1.047x, same process), inside stock's run-to-run spread. "
+       "gfx1201: off -- hk's GEMM at Qwen-Image 2.1's projections is 1.08-1.12x F.linear "
+       "under TunableOp on an R9700 (1.04-1.19x over the bench shapes), short of 1.15x",
        part="linear"),
     _R("sgld_convrot", "sglang_diffusion", "HK_SGLD_CONVROT", False, (),
        "ConvRot W8A8 linear for --quantization convrot_int8",
@@ -197,11 +199,13 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "MIOpen runs every channels-last VAE conv on its naive kernel, a 9-frame decode 2,680 s -> 4.1 s, "
        "closer to an fp32 VAE decode than stock (38.60 dB vs 38.53)",
        part="vaeconv"),
-    _R("sgld_rope", "sglang_diffusion", "HK_SGLD_ROPE", True, ("gfx1100",),
+    _R("sgld_rope", "sglang_diffusion", "HK_SGLD_ROPE", True, ("gfx1100", "gfx1201"),
        "Qwen-Image 2.1's complex RoPE on hk.ops.rotary_pairs (bf16, head_dim 128, one sequence)",
        "bit-identical to the engine's on every call (rotary_pairs reproduces torch's complex "
        "multiply); Qwen-Image 2.1 1024^2 30 steps: 28.88 -> 28.15 s a request (1.026x, same "
-       "process, ABBA x3)", part="rope"),
+       "process, ABBA x3). gfx1201 (one R9700, SGLang 0.5.23): 6.4x / 8.2x SGLang's apply_rope "
+       "per call at 4141 / 4096 tokens, bit-identical; on in a Qwen-Image 2.1 row with sgld_linear "
+       "(hk 23808 calls, engine 0; 1.16x an image against stock, 6 ABBA rounds)", part="rope"),
     _R("sgld_qknorm", "sglang_diffusion", "HK_SGLD_QKNORM", True, ("gfx1100",),
        "Qwen-Image 2.1's q / k RMSNorm and complex RoPE as one hk.ops.fused.rmsnorm_rotary_pairs "
        "launch (bf16, head_dim 128, one sequence)",

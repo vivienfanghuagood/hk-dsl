@@ -17,6 +17,8 @@ flat), the same tensor checks and errors, and a cold compile about 2.8x faster w
 headers (W7900D: 7.2 -> 2.6 s median). `tests/hk/gpu/test_module_ceiling.py` loads 320 kernel
 modules in one process and checks no keys are taken.
 
+**SGLang-Diffusion on gfx1201: `sgld_rope` on by default.** Qwen-Image 2.1's complex RoPE on `hk.ops.rotary_pairs` is 6.4-8.2x SGLang's per call on an R9700, bit for bit. `sgld_linear` stays off there: hk's GEMM is 1.08-1.12x `F.linear` at the model's projections on gfx1201.
+
 **SGLang-Diffusion: `sgld_qknorm` on SGLang 0.5.23.** 0.5.23 rewrote Qwen-Image 2.1's `apply_qk_norm_rope`; off CUDA it still falls back to the norm then `apply_rope`, now spelled `apply_rope(norm(x), rope)`. The route's engine contract looked for the old spelling only and turned the route off there; it now reads both.
 
 **hk.ops: the remaining dtype / warps factories as one kernel each** (#351). fused's strip silu_mul
