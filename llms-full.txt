@@ -36,8 +36,10 @@ in [the API reference](api/README.md).
 
 ## Kernels and parameters
 
-A kernel is a Python function. Positional parameters are tensors
-(`hk.Tensor[dtype]`, 4-D `(batch, depth, rows, cols)`). Constexprs are the
+A kernel is a Python function. Positional parameters are tensors, 4-D
+`(batch, depth, rows, cols)`: `hk.Tensor[hk.T]` takes its dtype from the call,
+so one definition serves bf16 and fp16 ([below](#one-kernel-for-every-dtype-and-warp-count)),
+and `hk.Tensor[hk.fp32]` fixes one. Constexprs are the
 keyword-only parameters, or any parameter annotated `hk.Constexpr[int]` with a
 default. They are baked into the source and are ordinary Python values in the
 body, so `range(D // 16)` unrolls and `if KIND == "softmax"` picks a branch at
@@ -57,23 +59,25 @@ and read by `g.stage` so far; translating a kernel that does anything else with
 one is an error that names the op.
 
 ```python
-T = hk.RT(hk.fp32, 16, 64)
+TILE = hk.RT(hk.fp32, 16, 64)
 
-@hk.kernel(warps=4, grid=lambda p: (1, hk.cdiv(p.x.rows, 16), p.x.batch))
-def row_sumsq(x: hk.Tensor[hk.bf16], o: hk.Tensor[hk.fp32]):
+@hk.kernel(grid=lambda p: (1, hk.cdiv(p.x.rows, 16), p.x.batch))
+def row_sumsq(x: hk.Tensor[hk.T], o: hk.Tensor[hk.fp32], *, warps=4):
     row = hk.arch.block_idx.y * 16
-    acc = hk.zeros(hk.col_vec(T))
-    for cb in range(hk.arch.warp_id(), hk.cdiv(x.cols, 64), 4):
-        v = x.at[row, cb * 64].load(T)       # global -> registers, bf16 -> fp32
+    acc = hk.zeros(hk.col_vec(TILE))
+    for cb in range(hk.arch.warp_id(), hk.cdiv(x.cols, 64), warps):
+        v = x.at[row, cb * 64].load(TILE)    # global -> registers, converted to fp32
         acc += (v * v).sum(axis=1)           # one row_sum, accumulated in place
     o.at[hk.arch.warp_id(), row] = acc       # a vector is stored along a row
 ```
 
-Each warp sums every fourth 64-column chunk of 16 rows, and stores its 16
-partial sums along a row of `o`: with `o` of shape `(4, rows)`, `o.sum(0)` is
-each row's sum of squares.
+Each warp sums every `warps`-th 64-column chunk of 16 rows, and stores its 16
+partial sums along a row of `o`: with `o` of shape `(warps, rows)`, `o.sum(0)`
+is each row's sum of squares. `row_sumsq(x, o)` takes `x`'s dtype, bf16 or
+fp16, at 4 warps; `row_sumsq(x, o8, warps=8)` with an 8-row `o8` at 8.
 
-`@hk.kernel` takes `warps`, `grid`, and optionally `arch`, `name`,
+`@hk.kernel` takes `grid`, `warps` (unless the kernel has a `warps` parameter, as
+above), and optionally `arch`, `name`,
 `max_vgprs`, `min_occupancy`, `max_occupancy`, `defines`, `resident` and `placement`
 (`python/hk/dsl/kernel.py`; the last two are
 [below](#between-workgroups-xcds-and-gpus-hkcomm-gfx950)).
@@ -104,13 +108,13 @@ constexpr is baked into the source:
 
 ```python
 @hk.kernel(grid=lambda p: (hk.cdiv(p.o.cols, 64), hk.cdiv(p.o.rows, 16), p.o.batch))
-def scale_pow2(x: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16], N: hk.Constexpr[int] = 1):
+def scale_pow2(x: hk.Tensor[hk.T], o: hk.Tensor[hk.T], N: hk.Constexpr[int] = 1):
     idx = hk.tile_coord(hk.arch.block_idx.z, 0, hk.arch.block_idx.y,
                         hk.arch.block_idx.x)
     v = x[idx].load(hk.RT(hk.fp32, 16, 64))
     for _ in range(N):                       # N is a Python int: unrolled
         v = v + v
-    o[idx] = v.to(hk.bf16)
+    o[idx] = v.to(o.dtype)
 ```
 
 Constexpr values are ints or floats. Specialising on a constexpr produces a
@@ -185,7 +189,10 @@ tensor, a residual, a norm's kind, an elementwise op.
 What neither a constexpr nor a dtype parameter carries -- the arch, a Python
 function the body calls -- is a factory's argument: a function that
 defines the kernel and returns it. `@hk.specialize` makes the factory build each
-variant once and names the kernel after its arguments:
+variant once and names the kernel after its arguments. Before 0.9.17 a factory
+was also how one kernel took several dtypes or warp counts, as in this example;
+that still works, but `hk.T` and `warps` ([above](#one-kernel-for-every-dtype-and-warp-count))
+replace it:
 
 ```python
 @hk.specialize
@@ -869,7 +876,11 @@ def inputs(device, shape=(4096, 14336)):
     return a, torch.randn_like(a), torch.empty_like(a)
 ```
 
-then run it after every change:
+A kernel written for every dtype (`hk.Tensor[hk.T]`) goes to the command
+line bound to the one you check: `gelu_mul_bf16 = gelu_mul.variant(T=hk.bf16)`
+in the file, then `python -m hk.check gelu_mul.py:gelu_mul_bf16`.
+
+Then run it after every change:
 
 ```bash
 python -m hk.check gelu_mul.py:gelu_mul            # reference, inputs and SHAPES from the file

@@ -119,5 +119,7 @@ def test_the_raw_kernels_trace(tmp_path, doc, arch):
     for i, src in enumerate(b for b in _blocks(doc) if "@hk.kernel" in b and "import hk" in b):
         mod = _module(src, tmp_path, f"doc_{Path(doc).stem}_{i}")
         for k in (v for v in vars(mod).values() if isinstance(v, hk.Kernel)):
-            on = hk.kernel(k.fn, arch=arch, grid=k.grid_fn, warps=k.warps, name=k.name)
-            assert on.trace().arch == arch
+            generic = isinstance(k, hk.GenericKernel)   # hk.Tensor[hk.T]: bind a dtype to trace
+            on = hk.kernel(k.fn, arch=arch, grid=k.grid_fn, name=k.name,
+                           **({} if generic else {"warps": k.warps}))
+            assert (on.trace(T=hk.bf16) if generic else on.trace()).arch == arch

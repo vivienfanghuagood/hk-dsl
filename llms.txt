@@ -10,15 +10,15 @@ Read in this order: this file, [how a kernel runs](docs/pipeline.md), [tiles and
 import torch, torch.nn.functional as F, hk
 
 @hk.kernel(grid=lambda p: (p.o.rows * hk.cdiv(p.o.cols, p.CW), 1, 1))
-def gelu_mul(a: hk.Tensor[hk.bf16], b: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16], *, CW=512):
-    S = hk.RS(hk.fp32, 1, CW, 8)                   # a register strip: one row, 8 bf16 (16 B) a lane
+def gelu_mul(a: hk.Tensor[hk.T], b: hk.Tensor[hk.T], o: hk.Tensor[hk.T], *, CW=512):   # hk.T: the call's dtype
+    S = hk.RS(hk.fp32, 1, CW, 8)                   # a register strip: one row, 8 16-bit values (16 B) a lane
     per_row = hk.cdiv(o.cols, CW)
     row = hk.arch.block_idx.x // per_row
     c0 = (hk.arch.block_idx.x - row * per_row) * CW
-    x = a.at[row, c0].load(S, bounded=True)        # bf16 -> fp32 on the load; past the end reads 0
+    x = a.at[row, c0].load(S, bounded=True)        # bf16 / fp16 -> fp32 on the load; past the end reads 0
     x.gelu(into=x)                                 # hk.math.gelu: the tanh form, fp32 only
     x *= b.at[row, c0].load(S, bounded=True)
-    o.at[row, c0].store(x, bounded=True)           # fp32 -> bf16 on the store
+    o.at[row, c0].store(x, bounded=True)           # fp32 -> the output's dtype on the store
 ```
 
 Save it in a file (the body must be source `inspect` can read), then:

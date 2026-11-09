@@ -21,7 +21,7 @@ A kernel from the [quickstart](quickstart.md#writing-the-kernel-yourself), in a 
 import hk
 
 @hk.kernel(grid=lambda p: (p.o.rows * hk.cdiv(p.o.cols, p.CW), 1, 1))
-def gelu_mul(a: hk.Tensor[hk.bf16], b: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16], *, CW=512):
+def gelu_mul(a: hk.Tensor[hk.T], b: hk.Tensor[hk.T], o: hk.Tensor[hk.T], *, CW=512):   # hk.T: the call's dtype
     S = hk.RS(hk.fp32, 1, CW, 8)
     per_row = hk.cdiv(o.cols, CW)
     row = hk.arch.block_idx.x // per_row
@@ -37,7 +37,7 @@ import torch
 import hk
 from gelu_mul import gelu_mul
 
-op = hk.torch_op(gelu_mul, ns="mylib", name="gelu_mul")   # == torch.ops.mylib.gelu_mul
+op = hk.torch_op(gelu_mul.variant(T=hk.bf16), ns="mylib", name="gelu_mul")   # the bf16 kernel: torch.ops.mylib.gelu_mul
 print(op.default._schema)  # mylib::gelu_mul(Tensor a, Tensor b, Tensor(a!) o) -> ()
 
 def mlp_act(gate, up):
