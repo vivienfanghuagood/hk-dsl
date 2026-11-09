@@ -10455,6 +10455,7 @@
 "Iterable": {},
 "List": {},
 "MEASURED_VLLM": {},
+"NORM_THEN_ROPE": {},
 "Optional": {},
 "RAISED": {},
 "ROLES": {},
@@ -10713,6 +10714,11 @@
 "params": [
 "fn",
 "drop_self"
+]
+},
+"norm_then_rope": {
+"params": [
+"src"
 ]
 },
 "os": {},
@@ -14891,8 +14897,11 @@
 "KERNELS": {},
 "MAX_TILES": {},
 "RMSNORM_ROTARY_PAIRS_KERNELS": {},
+"ROTARY": {},
+"ROTARY16": {},
 "ROTARY16_IN_CACHE": {},
 "ROTARY16_KERNELS": {},
+"ROTARY_HALVES": {},
 "ROTARY_HALVES_KERNELS": {},
 "ROTARY_KERNELS": {},
 "ROTARY_PAIRS_KERNELS": {},
@@ -14966,9 +14975,6 @@
 },
 "_rotary16_kernel": {
 "params": [
-"name",
-"dtype",
-"warps",
 "positions"
 ]
 },
@@ -14982,17 +14988,11 @@
 },
 "_rotary_halves_kernel": {
 "params": [
-"name",
-"dtype",
-"warps",
 "positions"
 ]
 },
 "_rotary_kernel": {
 "params": [
-"name",
-"dtype",
-"warps",
 "positions"
 ]
 },
@@ -15032,13 +15032,6 @@
 "a",
 "b",
 "out"
-]
-},
-"_strip_silu_mul_kernel": {
-"params": [
-"name",
-"dtype",
-"warps"
 ]
 },
 "_strip_silu_plan": {
@@ -15137,6 +15130,18 @@
 "params": [
 "arch",
 "moved"
+]
+},
+"strip_silu_mul_kernel": {
+"params": [
+"a",
+"b",
+"o",
+"warps",
+"CW",
+"RUN",
+"EXACT",
+"RESERVE"
 ]
 }
 },
@@ -16617,11 +16622,15 @@
 "MAX_TPW": {},
 "MAX_WARPS": {},
 "Optional": {},
+"RMS_WEIGHTED": {},
 "ROWS": {},
+"ROW_REDUCE": {},
+"STRIP": {},
 "STRIP_KERNELS": {},
 "STRIP_MAX_PER_LANE": {},
 "STRIP_MAX_PER_LANE_WAVE64": {},
 "STRIP_PRELOAD_PAST": {},
+"T": {},
 "WARP_COUNTS": {},
 "_ADD_TPW_INEXACT": {},
 "_BUILT": {},
@@ -16728,6 +16737,11 @@
 "ident"
 ]
 },
+"_offset_tag": {
+"params": [
+"offset"
+]
+},
 "_overlaps": {
 "params": [
 "a",
@@ -16768,9 +16782,6 @@
 },
 "_rms_weighted_kernel": {
 "params": [
-"name",
-"dtype",
-"warps",
 "residual",
 "split",
 "offset"
@@ -16778,10 +16789,7 @@
 },
 "_row_reduce_kernel": {
 "params": [
-"name",
-"dtype",
 "kind",
-"warps",
 "bounded",
 "split"
 ]
@@ -16832,10 +16840,7 @@
 },
 "_strip_kernel": {
 "params": [
-"name",
-"dtype",
 "kind",
-"warps",
 "offset"
 ]
 },
@@ -17764,13 +17769,6 @@
 "nblk"
 ]
 },
-"_strip_quantize_kernel": {
-"params": [
-"name",
-"dtype",
-"warps"
-]
-},
 "_suffix": {
 "params": [
 "dtype",
@@ -17871,6 +17869,17 @@
 "strip_preloads": {
 "params": [
 "moved"
+]
+},
+"strip_quantize_kernel": {
+"params": [
+"x",
+"q",
+"s",
+"warps",
+"CHUNKS",
+"RUN",
+"EXACT"
 ]
 }
 },
