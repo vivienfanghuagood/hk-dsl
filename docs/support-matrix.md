@@ -38,7 +38,7 @@ Each row is an image whose engines' contract facts are recorded in `tests/hk/ir/
 
 | image | role | engine | ROCm | torch | Triton | Python | routes on by default |
 |---|---|---|---|---|---|---|---|
-| R9700 vLLM image | development | vllm 0.1.dev1+ga50259bb3.rocm714 | 7.14 | 2.13.0a0+rocm7.14.0a20260612 | triton 3.7.1+git5d6048aa.rocm7.14.0a20260612 | 3.12.13 | `vllm_int4`, `vllm_gptq`, `vllm_quark`, `vllm_gemm`, `vllm_moe`, `vllm_moe_wna16`, `vllm_prefill` |
+| R9700 vLLM image | development | vllm 0.1.dev1+ga50259bb3.rocm714 | 7.14 | 2.13.0a0+rocm7.14.0a20260612 | triton 3.7.1+git5d6048aa.rocm7.14.0a20260612 | 3.12.13 | `vllm_int4`, `vllm_gptq`, `vllm_quark`, `vllm_norm`, `vllm_gemm`, `vllm_moe`, `vllm_moe_wna16`, `vllm_prefill` |
 
 ### gfx950 (Instinct MI355X)
 

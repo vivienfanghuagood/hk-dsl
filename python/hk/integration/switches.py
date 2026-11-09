@@ -112,7 +112,7 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "(disjoint), level at 1 and 4; kernel 1.9-3.6x vLLM at 6-32 tokens, 1.13-1.30x at 128-4096, "
        "1.05-1.20x at 64. gfx1100 (one W7900D, MiniCPM-V vLLM image): TPOT 1.13x / 1.18x / 1.25x "
        "at 1 / 4 / 8 concurrent requests (disjoint), TTFT level (prefill stays vLLM's there)"),
-    _R("vllm_norm", "vllm", "HK_VLLM_NORM", True, ("gfx1100",),
+    _R("vllm_norm", "vllm", "HK_VLLM_NORM", True, ("gfx1100", "gfx1201"),
        "vLLM's GemmaRMSNorm (Gemma, the Qwen3.5 family, MiniCPM-V-4.7's text models) on hk's "
        "fused (add+)RMSNorm at weight offset 1, where vLLM runs it as PyTorch ops: the eager calls "
        "(under torch.compile inductor fuses it, and it stays vLLM's)",
@@ -120,7 +120,11 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "0.9.18, route off vs on, engines rebuilt per block, 4 alternating rounds, all disjoint: TPOT "
        "at 1 / 4 / 8 requests 1.28x / 1.21x / 1.24x (1B) and 1.15x / 1.11x / 1.10x (35B), TTFT 8k "
        "1.07x / 1.06x; GSM8K-300 81.7 vs 82.7% and 96.0 vs 97.0% (McNemar p 0.65, 0.25); per call "
-       "within 1 bf16 ulp of vLLM's native path, residuals bit-equal"),
+       "within 1 bf16 ulp of vLLM's native path, residuals bit-equal. gfx1201 (R9700, hk 0.9.19's route, "
+       "one process, engines rebuilt per block, 6 alternating rounds, all disjoint): MiniCPM-V-4.7-1B "
+       "TPOT 1.27x / 1.25x / 1.20x, TTFT 2k / 8k 1.12x / 1.10x, GSM8K-300 82.0 vs 81.3% (p 0.79); "
+       "Qwen3.5-9B eager TPOT 1.10x / 1.09x / 1.10x, TTFT 2k 1.09x (its larger GEMVs dilute the norms), "
+       "GSM8K-300 95.0 vs 94.7%"),
     _R("vllm_gemm", "vllm", "HK_VLLM_GEMM", True, ("gfx1100", "gfx1201"),
        "unquantized linear layers by the measured route table, plus tuning at load",
        "gfx1100: greedy tokens identical to stock's, or a bf16 near-tie (history 35). "

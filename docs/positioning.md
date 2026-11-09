@@ -151,7 +151,7 @@ Three admissions explain why we quote nothing else:
 | GPU | arch | level | engine routes on by default |
 |---|---|---|---|
 | Radeon PRO W7900, Radeon PRO W7900D, Radeon RX 7900 | gfx1100 (RDNA3) | tested | [19](supported-hardware.md#engine-routes-on-each) |
-| Radeon AI PRO R9700, Radeon RX 9070 | gfx1201 (RDNA4) | tested | [10](supported-hardware.md#engine-routes-on-each) |
+| Radeon AI PRO R9700, Radeon RX 9070 | gfx1201 (RDNA4) | tested | [11](supported-hardware.md#engine-routes-on-each) |
 | Instinct MI300X, Instinct MI325X | gfx942 (CDNA3) | compile-only | [none](supported-hardware.md#engine-routes-on-each) |
 | Instinct MI355X, Instinct MI350X | gfx950 (CDNA4) | tested | [5](supported-hardware.md#engine-routes-on-each) |
 

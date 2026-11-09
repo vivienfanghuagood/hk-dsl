@@ -6,6 +6,9 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+- `vllm_norm` is on by default on gfx1201 too. On an R9700, vLLM eager, MiniCPM-V-4.7-1B: TPOT 1.27x / 1.25x / 1.20x
+  at 1 / 4 / 8 requests, TTFT 1.10-1.12x, GSM8K-300 equal; Qwen3.5-9B 1.09-1.10x.
+
 ## 0.9.19
 
 hk-dsl 0.9.19: on gfx1100, vLLM's Gemma-style RMSNorm runs on hk's fused (add+)RMSNorm in eager mode
