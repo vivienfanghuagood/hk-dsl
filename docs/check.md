@@ -54,9 +54,9 @@ def inputs(device, shape=(4096, 14336)):
     return a, torch.randn_like(a), torch.empty_like(a)
 ```
 
-A kernel written for every dtype (`hk.Tensor[hk.T]`) goes to the command
-line bound to the one you check: `gelu_mul_bf16 = gelu_mul.variant(T=hk.bf16)`
-in the file, then `python -m hk.check gelu_mul.py:gelu_mul_bf16`.
+A kernel written for every dtype (`hk.Tensor[hk.T]`) is checked as it is:
+`T` comes from the tensors `inputs()` returns, the way a call reads it, and
+each case reads its own (fp16 inputs check the fp16 specialization).
 
 Then run it after every change:
 

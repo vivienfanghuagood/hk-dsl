@@ -293,11 +293,50 @@ def _is_kernel(fn) -> bool:
     return isinstance(fn, Kernel)
 
 
+def _spec(k, overrides: Dict[str, Any]):
+    """A generic kernel's specialization for the dtype parameters and warps in
+    `overrides`, and the remaining constexprs; any other kernel as it is."""
+    from ..dsl.kernel import GenericKernel  # noqa: PLC0415
+
+    if isinstance(k, GenericKernel):
+        return k._for(overrides)
+    return k, overrides
+
+
+def _unbound_dtypes(fn, given: Dict[str, Any]) -> List[str]:
+    """The dtype parameters of a generic kernel `fn` that `given` does not name."""
+    from ..dsl.kernel import GenericKernel  # noqa: PLC0415
+
+    if not isinstance(fn, GenericKernel):
+        return []
+    return [v for v in fn._typevars if v not in given]
+
+
+def _read_dtypes(fn, given: Dict[str, Any], args) -> Dict[str, Any]:
+    """The dtype parameters of a generic kernel `fn` that `given` does not
+    name, read off `args` as a call reads them (`hk.Tensor[hk.T]` tensors
+    must agree); {} for any other target or with no arguments."""
+    if args is None:
+        return {}
+    return {v: fn._infer(v, list(args)) for v in _unbound_dtypes(fn, given)}
+
+
+def _shape_args(make):
+    """A case's arguments for their dtypes only: on the meta device (nothing
+    allocated) when the generator runs there, else on the CPU."""
+    try:
+        return _as_tuple(_call_maker(make, "meta"))
+    except Exception:  # noqa: BLE001
+        return _as_tuple(_call_maker(make, "cpu"))
+
+
 def _resources(k, overrides: Dict[str, Any], do_build: bool) -> Dict[str, Any]:
     """One build row: the trace's facts, and with hipcc the compiler's."""
     from ..target import get_target  # noqa: PLC0415
 
-    row: Dict[str, Any] = {"kernel": k.name, "consts": dict(overrides)}
+    given = dict(overrides)
+    k, overrides = _spec(k, overrides)
+    row: Dict[str, Any] = {"kernel": k.name, "consts": given}
     t0 = _time.perf_counter()
     tr = k.trace(**overrides)
     row.update(arch=tr.arch, warps=tr.warps, threads=tr.threads,
@@ -835,7 +874,8 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
     def add_builds(calls):
         for k, ov in calls:
             try:
-                key = (id(k), tuple(sorted(k._resolve_consts(ov).items())))
+                sk, sov = _spec(k, ov)
+                key = (id(sk), tuple(sorted(sk._resolve_consts(sov).items())))
             except Exception:  # noqa: BLE001
                 key = (id(k), repr(ov))
             if key in seen_builds:
@@ -859,6 +899,17 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
     # once with launching off to find what it launches.
     built_s = 0.0
     variants: Dict[str, Dict[str, Any]] = {}
+    # A generic kernel's dtype parameters not given in consts are read off the
+    # first case's tensors, as a call reads them (each case reads its own below).
+    given, read = dict(consts), {}
+    if is_kernel and all_cases[0] is not None:
+        try:
+            if _unbound_dtypes(fn, consts):
+                read = _read_dtypes(fn, consts, _shape_args(all_cases[0]))
+        except Exception as e:  # noqa: BLE001
+            _err(report, "inputs", e)
+            return report
+    consts = {**consts, **read}
     if is_kernel:
         t0 = _time.perf_counter()
         add_builds([(fn, consts)])
@@ -902,10 +953,16 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
             _err(report, "inputs", e)
             continue
         case["inputs"] = describe(args)
+        try:
+            tv = _read_dtypes(fn, given, args) if is_kernel else {}
+        except Exception as e:  # noqa: BLE001
+            _err(report, "inputs", e)
+            continue
+        cc = {**consts, **tv}
         # Which arguments are outputs (written only) and in place (read
         # and written).
         try:
-            names = [p.name for p in fn.trace(**consts).tensors()] if is_kernel else []
+            names = [p.name for p in fn.trace(**cc).tensors()] if is_kernel else []
         except Exception as e:  # noqa: BLE001
             _err(report, "trace", e)
             continue
@@ -919,7 +976,7 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
             out_idx = [index(o) for o in outputs]
         elif is_kernel:
             try:
-                out_idx = _kernel_outputs(fn, consts, len(args))
+                out_idx = _kernel_outputs(fn, cc, len(args))
             except Exception as e:  # noqa: BLE001
                 _err(report, "trace", e)
                 continue
@@ -947,7 +1004,7 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
             _sync()
             t0 = _time.perf_counter()
             with rec.active():
-                res = fn(*mine, **consts)
+                res = fn(*mine, **cc)
             _sync()
             # A raw kernel was traced and built in step 1: its first call is
             # that and this launch.
@@ -974,8 +1031,9 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
 
         # The sweep's variants: checked like the subject, timed beside it.
         # (callable, its arguments, its keywords): timed on rotated copies of the arguments (_rotating)
-        contenders: Dict[str, Tuple[Callable, List[Any], Dict[str, Any]]] = {"hk": (fn, args, consts)}
+        contenders: Dict[str, Tuple[Callable, List[Any], Dict[str, Any]]] = {"hk": (fn, args, cc)}
         for label, vc in variants.items():
+            vc = {**vc, **tv}
             try:
                 vm = _clone(args)
                 _fill_nan(vm, out_idx)
