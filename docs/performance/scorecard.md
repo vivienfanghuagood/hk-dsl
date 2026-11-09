@@ -1,9 +1,5 @@
 # The scorecard: the only performance numbers we quote
 
-> **In progress.** The Radeon section is complete. The MI355X section still states one result while its
-> end-to-end table is re-run; it will then carry the method, the software stack and image, every arm and the
-> latest table, as the Radeon section does.
-
 ## The rule
 
 A performance claim from this project quotes an end-to-end serving result
@@ -13,21 +9,54 @@ opponent was configured.
 
 ## Instinct MI355X: DeepSeek-V4.1-Flash on vLLM
 
-- **The setup:** vLLM serving DeepSeek-V4.1-Flash with real weights, tensor
-  parallel over two MI355X.
-- **The baseline:** stock vLLM with AITER's tuned paths. These are its tuned
-  GEMM, a MoE table tuned on real routing, and its fused sparse MLA.
-- **What hk adds:** its default routes on top of that baseline. Each arm is
-  run at its best configuration.
+vLLM serving DeepSeek-V4.1-Flash with real weights, tensor parallel over two MI355X.
 
-| | against the AITER-tuned stock |
-|---|---|
-| 8k-token prefill throughput | **about +5%** |
-| decode time per output token | unchanged (within the spread) |
+**How it is measured.**
 
-Against a stock vLLM *without* AITER's tuned paths, hk's default routes show a
-larger gain. A stock vLLM configured with AITER's tuned paths reaches about
-the same gain without hk, so we do not quote it.
+- **One container, fresh servers.** Every arm gets one fresh `vllm serve` per round, with the same engine flags and
+  the same recipe environment (`VLLM_ROCM_USE_AITER=1`, `VLLM_ROCM_USE_AITER_TRITON_SPARSE_MLA=1`,
+  `VLLM_ROCM_QUICK_REDUCE_QUANTIZATION=INT4`). Arm order is reversed every other round. 2 rounds.
+- **Fair stock.** The baseline is stock vLLM with AITER's tuned paths switched on through configuration only (no vLLM
+  or AITER source change): its tuned MXFP8 GEMM, a MoE table tuned on the model's real routing, and its fused sparse
+  MLA. Plain stock (the recipe alone) runs in the same session as a reference.
+- **What a cell is.** The mean over rounds, with the range over rounds. A delta smaller than the spread (the larger
+  arm's range, in % of the baseline) is shown as `=`. GSM8K: McNemar exact test over every pair of runs; p >= 0.05 is
+  `=`.
+- **Discarded measurements.** A measurement is dropped if any request failed, if a process outside the container held
+  one of the two GPUs during it, or if it stalled (slowest request > 2.4x its lower-quartile request). One was
+  dropped: the tuned-stock "mixed" run of round 1 (a stall), so that cell has one round.
+
+**Software.** vLLM 0.32.1rc1.dev36 (`vllm/vllm-openai-rocm` nightly e68efc685, ROCm 10.0, torch 2.12, AITER 0.1.25),
+hk-dsl 0.9.16. Engine: TP2, max_model_len 16640, no prefix caching.
+
+**The arms.**
+
+- **tuned stock**: the baseline above.
+- **hk + tuned**: hk's default routes on top of the tuned baseline. AITER's fused sparse MLA keeps prefill and decode;
+  AITER's tuned MoE table serves the rows hk's MoE route does not take.
+- **hk, sparse-MLA route**: hk's default routes including its sparse-MLA prefill. That route runs where vLLM's own
+  sparse MLA runs, so this arm leaves `VLLM_ROCM_USE_AITER_TRITON_SPARSE_MLA` unset; decode then uses vLLM's sparse-MLA
+  decode kernel, not AITER's.
+
+| metric | tuned stock | hk + tuned | hk, sparse-MLA route | hk + tuned vs tuned stock | sparse-MLA route vs tuned stock |
+|---|---|---|---|---|---|
+| prefill 8k tokens, tok/s | 69,371 (69,286-69,455) | 72,626 (72,605-72,647) | 74,293 (74,180-74,406) | **+4.7%** | **+7.1%** |
+| prefill 8k, TTFT mean (ms) | 883.3 (882.0-884.6) | 843.7 (843.4-844.0) | 824.6 (823.2-826.0) | **-4.5%** | **-6.6%** |
+| long (8k in / 128 out, 8 concurrent), req/s | 3.628 (3.622-3.634) | 3.729 (3.724-3.734) | 3.736 (3.721-3.752) | **+2.8%** | **+3.0%** |
+| long, TTFT P99 (ms) | 963.4 (954.0-972.8) | 910.4 (897.4-923.4) | 892.6 (885.5-899.7) | **-5.5%** | **-7.4%** |
+| mixed (2k in / 256 out, 32 concurrent), req/s | 6.212 (1 round) | 6.274 (6.261-6.287) | 6.138 (6.138-6.138) | +1.0% | -1.2% (worse) |
+| mixed, TPOT mean (ms) | 17.75 (1 round) | 17.59 (17.55-17.63) | 18.02 (18.02-18.03) | -0.9% | +1.5% (worse) |
+| decode TPOT, 1 concurrent (ms) | 6.566 (6.560-6.572) | 6.552 (6.543-6.562) | 6.533 (6.519-6.548) | = | -0.5% |
+| decode TPOT, 4 concurrent (ms) | 7.800 (7.784-7.815) | 7.776 (7.756-7.795) | 7.863 (7.861-7.865) | = | +0.8% (worse) |
+| decode TPOT, 8 concurrent (ms) | 9.257 (9.249-9.266) | 9.284 (9.245-9.322) | 9.284 (9.277-9.292) | = | +0.3% (worse) |
+| GSM8K (1319, greedy) | 94.69% | 94.62% | 94.20% | = (McNemar p 0.63-1.00) | = (p 0.23-0.47) |
+
+hk + tuned is the configuration we quote: **about +5% on 8k-token prefill throughput and 4-6% lower prefill TTFT
+against the AITER-tuned stock, with decode unchanged.** The sparse-MLA route adds about two more points of prefill,
+at a cost of up to 1.5% at decode-heavy load (vLLM's sparse-MLA decode kernel against AITER's), an open item.
+
+Against plain stock (the recipe without AITER's tuned paths), hk's routes show larger prefill gains (+15% for
+hk + tuned, +18% for the sparse-MLA route). The tuned stock itself is +10% over plain stock, so we do not quote those.
 
 ## Radeon (RDNA3 / RDNA4)
 
