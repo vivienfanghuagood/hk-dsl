@@ -67,8 +67,8 @@ def test_the_cdna_entry_point_takes_the_stream(arch):
     src = scaffold.pybind_module(k.trace())
     cdna = arch in CDNA
     assert scaffold.takes_stream(arch) == cdna
-    assert ("bind_function_on_stream<launch_on>(m, \"k\"" in src) == cdna
-    assert ("bind_function<launch>(m, \"k\"" in src) == (not cdna)
+    assert ("entry_on_stream<launch_on, globals, &globals::a, &globals::o>" in src) == cdna
+    assert ("entry<launch, globals, &globals::a, &globals::o>" in src) == (not cdna)
 
 
 def test_the_register_file_is_512_with_a_granule_of_8():

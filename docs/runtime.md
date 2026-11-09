@@ -116,8 +116,18 @@ and 23, and clang 24's `--genco`), and clang 24's bare lines for a `-shared`
 module, whose device code its new offload driver generates at link time
 (`k.cpp:3:0:     VGPRs: 2`).
 
-A cold compile takes about 4-7 s as a pybind module and about 1 s as a code
-object, attention included; the libtorch op takes about 15 s.
+A cold compile takes about 2.5-6 s as a module (a plain CPython extension;
+it was 4-7 s while modules were pybind11 ones, whose headers were most of the
+host half) and about 1 s as a code object, attention included; the libtorch
+op takes about 15 s.
+
+A process may load as many kernels as it needs. Each is a module of its own,
+and a module is one CPython function (`include/pyutils/hk_bind.cuh`) with
+nothing per process to run out of; as pybind11 modules they took four pthread
+thread-specific-storage keys each with torch 2.10's pybind11 (the stock
+rocm/pytorch 7.2.3 image), of 1024 a process, and a process aborted after
+~250 kernels on any GPU (issue #350; `tests/hk/gpu/test_module_ceiling.py`
+loads 320).
 
 ## The cache
 
@@ -377,7 +387,7 @@ that is most of a build. `hk.runtime.codeobj` compiles the kernel alone
   out-parameters and the same tensor checks as the libtorch one.
 
 Same cache, same gate. A cold compile takes about 1 s as a code object,
-4-7 s as a pybind module and about 15 s as a libtorch op
+2.5-6 s as a module and about 15 s as a libtorch op
 (`tools/hk-bench/compile_time.py` measures it).
 
 `hk.torch_op` registers over the code object by default; inside vLLM's

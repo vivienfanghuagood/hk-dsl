@@ -176,7 +176,7 @@ def test_warm_cache_still_defaults_to_pybind(monkeypatch):
     seen = {}
     monkeypatch.setattr(warm_mod, "build", _recording_build(seen))
     warm_mod.warm_cache([("add", _add, {})], workers=1)
-    assert "PYBIND11_MODULE" in seen["source"]
+    assert "PyModuleDef" in seen["source"]
     assert seen["extra_flags"] == () and seen["kind"] == "so"
 
 
@@ -191,4 +191,4 @@ def test_warm_cache_can_build_the_code_object_a_torch_op_loads(monkeypatch):
     warm_mod.warm_cache([("add", _add, {})], workers=1, scaffold="device",
                         kind="co")
     assert scaffold.LAYOUT_SYMBOL in seen["source"]
-    assert "PYBIND11_MODULE" not in seen["source"] and seen["kind"] == "co"
+    assert "PyModuleDef" not in seen["source"] and seen["kind"] == "co"
