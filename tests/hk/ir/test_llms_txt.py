@@ -57,6 +57,6 @@ def test_the_docs_kernel_traces(tmp_path, doc, arch):
 
     mod = _first_kernel(REPO / doc, tmp_path, "doc_kernel_" + doc.replace("/", "_").replace(".", "_"))
     k = mod.gelu_mul
-    on = hk.kernel(k.fn, arch=arch, grid=k.grid_fn, warps=k.warps, name=k.name)
-    t = on.trace()
+    on = k.for_arch(arch)
+    t = on.trace(T=hk.bf16) if isinstance(on, hk.GenericKernel) else on.trace()   # hk.Tensor[hk.T]: bind it
     assert t.arch == arch and t.written_tensors() == ["o"]
