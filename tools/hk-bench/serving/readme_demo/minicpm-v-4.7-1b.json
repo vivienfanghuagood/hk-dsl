@@ -1,0 +1,23 @@
+{
+ "model": "openbmb/MiniCPM-V-4.7-1B",
+ "engine": {
+  "dtype": "bfloat16",
+  "model_impl": "vllm",
+  "max_model_len": 262144,
+  "max_num_seqs": 32,
+  "max_num_batched_tokens": 4096,
+  "enable_prefix_caching": false,
+  "attention_config": {
+   "backend": "TRITON_ATTN"
+  },
+  "mm_encoder_attn_backend": "TORCH_SDPA",
+  "enforce_eager": true,
+  "limit_mm_per_prompt": {
+   "image": 4,
+   "video": 0
+  },
+  "gpu_memory_utilization": 0.3,
+  "kv_cache_memory_bytes": 8589934592
+ },
+ "notes": "the scorecard's MiniCPM-V-4.7 1B row's production args (enforce_eager), prefix caching off; two engines share the card, so 0.3 + an 8 GiB KV cache each"
+}
