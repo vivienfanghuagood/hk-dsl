@@ -108,14 +108,21 @@ def _looks_like_ref(s: str) -> bool:
 def param_names(fn, outputs: List[int]) -> Optional[List[str]]:
     """The reference's argument names: the target's positional parameters,
     a raw kernel's minus the tensors it writes."""
+    import hk  # noqa: PLC0415
     from hk.dsl.kernel import Kernel  # noqa: PLC0415
 
     if isinstance(fn, Kernel):
         names = [n for n, _ in fn._tensors]
-        try:
-            written = set(fn.trace().written_tensors())
-        except Exception:  # noqa: BLE001
-            written = set()
+        written = set()
+        # A generic kernel stores into the same tensors whatever its dtypes:
+        # trace it with the first that traces.
+        tvs = list(getattr(fn, "_typevars", {}))
+        for dt in ((None,) if not tvs else (hk.bf16, hk.fp16, hk.fp32)):
+            try:
+                written = set(fn.trace(**{v: dt for v in tvs}).written_tensors())
+                break
+            except Exception:  # noqa: BLE001
+                continue
         return [n for i, n in enumerate(names) if n not in written and i not in outputs]
     try:
         ps = inspect.signature(fn).parameters.values()
@@ -477,6 +484,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.dump:
         if not isinstance(fn, hk.Kernel):
             raise SystemExit("hk.check: --dump needs an @hk.kernel target")
+        if hkc._unbound_dtypes(fn, consts):
+            # A generic kernel's dtypes, read off the first case as hk.check reads them.
+            gen = make_inputs(args.inputs[0]) if args.inputs else \
+                cfg.get("inputs") or getattr(mod, "inputs", None)
+            shapes = None if args.inputs else getattr(mod, "SHAPES", None)
+            if gen is not None:
+                consts = {**consts, **hkc._read_dtypes(fn, consts, hkc._shape_args(
+                    lambda device: hkc._call_maker(gen, device, shapes[0] if shapes else None)))}
         print(fn.trace(**consts).dump() if args.dump == "ir" else fn.source(**consts))
         return 0
 

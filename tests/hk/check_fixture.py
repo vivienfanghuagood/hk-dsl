@@ -38,6 +38,17 @@ def gelu_mul_wrong(a: hk.Tensor[hk.bf16], b: hk.Tensor[hk.bf16], o: hk.Tensor[hk
         o[idx] = x.to(hk.bf16)
 
 
+@hk.kernel(grid=_grid)
+def gelu_mul_any(a: hk.Tensor[hk.T], b: hk.Tensor[hk.T], o: hk.Tensor[hk.T]):
+    """gelu_mul for every dtype: hk.check reads T off `inputs`, as a call does."""
+    idx = hk.tile_coord(0, 0, hk.arch.block_idx.y, hk.arch.block_idx.x)
+    t = hk.RT(hk.fp32, ROWS, COLS)
+    x = a[idx].load(t)
+    x.gelu(into=x)
+    x *= b[idx].load(t)
+    o[idx] = x.to(o.dtype)
+
+
 @hk.kernel(grid=lambda p: (p.o.rows * hk.cdiv(p.o.cols, p.CW), 1, 1))
 def gelu_mul_strip(a: hk.Tensor[hk.bf16], b: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16], *,
                    CW=512):

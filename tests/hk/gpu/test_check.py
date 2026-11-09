@@ -112,3 +112,21 @@ def test_sweep_times_each_variant():
     t = r.cases[0]["time"]
     assert "hk[CW=1024]" in t["ms"] and t["best"] in ("hk", "hk[CW=1024]")
     assert r.cases[0]["correct"]["variants"]["hk[CW=1024]"]["ok"]
+
+
+def test_generic_kernel_reads_its_dtype_per_case():
+    """hk.Tensor[hk.T]: each case's T from its inputs, as at a call."""
+    import torch
+
+    import hk
+
+    import check_fixture as fx
+
+    def fp16(device):
+        return tuple(t.to(torch.float16) for t in fx.inputs(device))
+
+    r = hk.check(fx.gelu_mul_any, fx.reference, cases=[fx.inputs, fp16], time=False)
+    assert r.status == "pass", str(r)
+    assert [c["correct"]["ok"] for c in r.cases] == [True, True]
+    assert sorted(b["kernel"] for b in r.builds) == sorted(
+        fx.gelu_mul_any.variant(T=dt).name for dt in (hk.bf16, hk.fp16))

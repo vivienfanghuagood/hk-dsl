@@ -124,6 +124,73 @@ def test_cpu_discovery_through_a_kept_launcher():
     assert [b["kernel"] for b in r.builds] == ["gelu_mul"]
 
 
+def _fp16_inputs(device, shape=(64, 1024)):
+    import torch
+
+    return tuple(t.to(torch.float16) for t in __import__("check_fixture").inputs(device, shape))
+
+
+def test_generic_kernel_reads_its_dtype_off_the_inputs():
+    """A kernel on hk.Tensor[hk.T]: T comes from the inputs, as at a call;
+    the build row is the specialization's."""
+    pytest.importorskip("torch")
+    import hk
+
+    import check_fixture as fx
+
+    r = hk.check(fx.gelu_mul_any, fx.reference, fx.inputs, gpu=False, build=False)
+    assert r.status == "built", str(r)
+    assert [b["kernel"] for b in r.builds] == [fx.gelu_mul_any.variant(T=hk.bf16).name]
+    r = hk.check(fx.gelu_mul_any, fx.reference, _fp16_inputs, gpu=False, build=False)
+    assert [b["kernel"] for b in r.builds] == [fx.gelu_mul_any.variant(T=hk.fp16).name]
+    # Given, it is not read.
+    r = hk.check(fx.gelu_mul_any, fx.reference, fx.inputs, consts={"T": hk.fp16},
+                 gpu=False, build=False)
+    assert [b["kernel"] for b in r.builds] == [fx.gelu_mul_any.variant(T=hk.fp16).name]
+
+
+def test_generic_kernel_inputs_that_disagree_are_an_input_error():
+    torch = pytest.importorskip("torch")
+    import hk
+
+    import check_fixture as fx
+
+    def mixed(device):
+        a, b, o = fx.inputs(device)
+        return a, b.to(torch.float16), o
+
+    r = hk.check(fx.gelu_mul_any, fx.reference, mixed, gpu=False, build=False)
+    assert r.status == "error"
+    (e,) = r.errors
+    assert e["stage"] == "inputs" and "disagree" in e["message"]
+
+
+def test_generic_kernel_without_inputs_says_to_pass_its_dtype():
+    import hk
+
+    import check_fixture as fx
+
+    r = hk.check(fx.gelu_mul_any, gpu=False, build=False)
+    assert r.status == "error"
+    assert "T=hk.bf16" in r.errors[0]["message"]
+
+
+def test_cli_generic_kernel(capsys):
+    pytest.importorskip("torch")
+    from hk.check.__main__ import main, param_names
+
+    import check_fixture as fx
+
+    fixture = Path(__file__).resolve().parents[1] / "check_fixture.py"
+    code = main([f"{fixture}:gelu_mul_any", "--trace-only", "--json", "-", "--quiet"])
+    out = json.loads(capsys.readouterr().out)
+    assert code == 0 and out["builds"][0]["kernel"].startswith("gelu_mul_any__Tbf16")
+    assert main([f"{fixture}:gelu_mul_any", "--dump", "ir"]) == 0
+    assert capsys.readouterr().out.strip()
+    # --ref as an expression names what the kernel reads.
+    assert param_names(fx.gelu_mul_any, []) == ["a", "b"]
+
+
 @pytest.mark.arch("gfx1100")  # gfx1100's strip chunk
 def test_sweep_drops_a_variant_that_does_not_trace():
     import hk

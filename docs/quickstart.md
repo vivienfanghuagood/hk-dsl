@@ -175,9 +175,9 @@ Both kernels take their dtype from the call, and a keyword-only `warps`
 parameter would make the warp count a call argument too
 ([one kernel for every dtype](language.md#one-kernel-for-every-dtype-and-warp-count)).
 Each (dtype, warps) is built once and cached. Where something needs the kernel
-for one dtype -- `trace`, `source` and `build` above, `hk.torch_op`, the
-`hk.check` command line -- bind it: `gelu_mul.variant(T=hk.bf16)`, or `T=` in
-the call. A per-dtype factory (`@hk.specialize`) is the pre-0.9.17 way; it
+for one dtype -- `trace`, `source` and `build` above, `hk.torch_op` -- bind
+it: `gelu_mul.variant(T=hk.bf16)`, or `T=` in the call. `hk.check` reads it
+from its inputs, like a call. A per-dtype factory (`@hk.specialize`) is the pre-0.9.17 way; it
 still works.
 
 `add.build(T=hk.bf16).report()` prints one line per kernel instantiation.
