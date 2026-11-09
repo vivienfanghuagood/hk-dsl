@@ -4,7 +4,19 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
-## Unreleased
+## 0.9.19
+
+hk-dsl 0.9.19: on gfx1100, vLLM's Gemma-style RMSNorm runs on hk's fused (add+)RMSNorm in eager mode
+(`vllm_norm`, on by default; 1.10-1.28x TPOT on MiniCPM-V-4.7); `python -m hk.check` takes a generic kernel as it
+is. No change to the dialect (`hk-dialect-8`).
+
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels below are the same files.
+
+    pip install hk_dsl-0.9.19-cp312-cp312-manylinux_2_35_x86_64.whl
+
+### Changes
 
 **vLLM: Gemma-style RMSNorm on hk in eager mode** (`vllm_norm`, on by default on gfx1100; #359). vLLM's
 `GemmaRMSNorm` (Gemma, the Qwen3.5 family, MiniCPM-V-4.7's text models) has no fused kernel on
@@ -15,9 +27,17 @@ alternating rounds: MiniCPM-V-4.7-1B TPOT at 1 / 4 / 8 requests 1.28x / 1.21x / 
 (TP2) 1.15x / 1.11x / 1.10x, TTFT 1.06-1.07x, GSM8K-300 equal; outputs within 1 bf16 ulp of vLLM's,
 residuals bit-equal. Calls under torch.compile stay vLLM's.
 
-**hk.check takes a generic kernel as it is.** A kernel on `hk.Tensor[hk.T]` no longer needs
+**hk.check takes a generic kernel as it is** (#362). A kernel on `hk.Tensor[hk.T]` no longer needs
 `.variant(T=...)` before `python -m hk.check FILE.py:NAME`: `T` is read from each case's inputs, as at
 a call (also for `--dump` and `--ref` expressions).
+
+**Docs.** The scorecard page is complete: its MI355X section has the method, the software, three arms and the table
+against the AITER-tuned stock (#357). The README opens with a 14 s recording of one 32k-token request on a W7900D,
+stock vLLM and vLLM with hk side by side (#358). The docs teach generic kernels first (#355).
+
+**Tests and CI** (#232, #360, #361, #228). `test_null_stream_rdna`'s side-stream producer is bounded and seeded (it
+flaked 2 in 200 runs); doc-kernel and `for_arch` tests are independent of `HK_ARCH`; the repository's
+`scripts/ci/merge_train.py` is the merge-train tool as it runs.
 
 ## 0.9.18
 
