@@ -6,7 +6,7 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
-**vLLM: Gemma-style RMSNorm on hk in eager mode** (`vllm_norm`, on by default on gfx1100; #PR). vLLM's
+**vLLM: Gemma-style RMSNorm on hk in eager mode** (`vllm_norm`, on by default on gfx1100; #359). vLLM's
 `GemmaRMSNorm` (Gemma, the Qwen3.5 family, MiniCPM-V-4.7's text models) has no fused kernel on
 ROCm and runs as ~8 PyTorch ops a norm unless the model is compiled; a deployment served eager
 (MiniCPM-V-4.7's production configuration) is bound by those launches at one request. The route
