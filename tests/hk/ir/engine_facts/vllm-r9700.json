@@ -385,6 +385,19 @@
    ]
   },
   "vllm_mxfp8": null,
+  "vllm_norm": {
+   "forward_cuda": [
+    "self",
+    "x",
+    "residual"
+   ],
+   "has_gemma_rms_norm": true,
+   "init": [
+    "self",
+    "hidden_size",
+    "eps"
+   ]
+  },
   "vllm_prefill": null,
   "vllm_quark": {
    "apply": [

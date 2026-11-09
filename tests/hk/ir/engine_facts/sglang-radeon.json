@@ -355,6 +355,9 @@
    "_error": "ModuleNotFoundError: No module named 'vllm'"
   },
   "vllm_mxfp8": null,
+  "vllm_norm": {
+   "_error": "ModuleNotFoundError: No module named 'vllm'"
+  },
   "vllm_prefill": {
    "_error": "ModuleNotFoundError: No module named 'vllm'"
   },

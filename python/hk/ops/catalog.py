@@ -30,7 +30,7 @@ FAMILIES = [
     dict(name="norm", what="RMSNorm, the fused add + RMSNorm, LayerNorm, softmax, over the last axis",
          entries=["hk.ops.rmsnorm", "hk.ops.rms_norm", "hk.ops.fused_add_rms_norm",
                   "hk.ops.layernorm", "hk.ops.softmax"],
-         arches=EVERY, dtypes="bf16, fp16, fp32", routes=["sglang_norm"],
+         arches=EVERY, dtypes="bf16, fp16, fp32", routes=["sglang_norm", "vllm_norm"],
          tests=["test_phase2.py", "test_strip.py", "test_rms_norm_weighted.py"]),
     dict(name="fused", what="SwiGLU's activation half (SiLU-and-mul) and RoPE",
          entries=["hk.ops.silu_mul", "hk.ops.rope", "hk.ops.rotary"],
