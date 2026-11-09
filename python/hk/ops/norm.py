@@ -87,6 +87,7 @@ softmax wants it folded at the same width, by half again. The reason is in
 from typing import Any, Optional
 
 from .. import dsl as hk
+from ..dsl import T
 from ..dsl.collective import cross_warp, fold_rows
 from ..types import bf16, fp16, fp32
 
@@ -432,8 +433,7 @@ def plan(cols: int, kind: str = "rms", rows: Optional[int] = None):
     return warps, 0, 1
 
 
-def _row_reduce_kernel(name: str, dtype, kind: str, warps: int,
-                       bounded: bool = False, split: int = 0):
+def _row_reduce_kernel(kind: str, bounded: bool = False, split: int = 0):
     """A kernel that reduces each row and rescales it.
 
     `kind` picks the arithmetic:
@@ -446,8 +446,8 @@ def _row_reduce_kernel(name: str, dtype, kind: str, warps: int,
     read and write the same elements. `split` is HK_RT_HALF_SPLIT, which only
     the bounded forms have.
     """
-    def body(x: hk.Tensor[dtype], o: hk.Tensor[dtype], *, ROWS=ROWS, COLS=COLS,
-             WARPS=warps, TPW=0, FOLD=1, EXACT=0, EPS=1e-6):
+    def body(x: hk.Tensor[T], o: hk.Tensor[T], *, warps=1, ROWS=ROWS, COLS=COLS,
+             TPW=0, FOLD=1, EXACT=0, EPS=1e-6):
         t = _ftile(ROWS, COLS, FOLD)
         vt = hk.col_vec(t)
 
@@ -471,14 +471,14 @@ def _row_reduce_kernel(name: str, dtype, kind: str, warps: int,
             workgroup are reading 16 adjacent blocks -- one contiguous 4 KB
             run per row -- instead of 16 places a row apart.
             """
-            return step * WARPS + hk.arch.warp_id() if WARPS > 1 else step
+            return step * warps + hk.arch.warp_id() if warps > 1 else step
 
         def tile(cb):
             col_lo, pad = _block_start(cb, COLS, ncols, EXACT)
             idx = hk.elem_coord(0, 0, row_lo, col_lo)
             return x[idx].load(t, bounded=bounded), pad, idx
 
-        # Over-provisioned blocks -- WARPS*TPW can exceed nblk, and a warp
+        # Over-provisioned blocks -- warps*TPW can exceed nblk, and a warp
         # whose step runs past the end gets cb >= nblk -- are not a special
         # case. _block_start clamps them to the last in-bounds block, so they
         # re-read data another warp already has; the mask then makes them the
@@ -486,7 +486,7 @@ def _row_reduce_kernel(name: str, dtype, kind: str, warps: int,
         # to the same place. Both are exactly what backing up already does for
         # a non-dividing tail.
         held = [tile(cb_of(s)) for s in range(TPW)] if TPW else None
-        steps = None if TPW else hk.cdiv(nblk, WARPS)
+        steps = None if TPW else hk.cdiv(nblk, warps)
 
         def visit(fn):
             """Call `fn(v, pad, idx)` once per column block this warp owns.
@@ -516,8 +516,8 @@ def _row_reduce_kernel(name: str, dtype, kind: str, warps: int,
         def combine(vec, op):
             """Finish a per-warp partial: across the workgroup's warps, then
             across the tile's rows when they are chunks of one row."""
-            vec = cross_warp(vec, op, WARPS)
-            return fold_rows(vec, op, WARPS) if FOLD != 1 else vec
+            vec = cross_warp(vec, op, warps)
+            return fold_rows(vec, op, warps) if FOLD != 1 else vec
 
         if kind == "softmax":
             # Online: a running max and a sum of exp under it, rescaled when
@@ -654,16 +654,15 @@ def _row_reduce_kernel(name: str, dtype, kind: str, warps: int,
             if kind == "layer":
                 v -= mean
             v *= scale
-            put(idx, v.to(dtype))
+            put(idx, v.to(T))
 
         visit(write)
 
-    return hk.kernel(body, warps=warps, grid=_grid, name=name,
+    return hk.kernel(body, grid=_grid, name=kind + ("_hb" if bounded else ""),
                      defines={"HK_RT_HALF_SPLIT": split} if split else None)
 
 
-def _rms_weighted_kernel(name: str, dtype, warps: int, residual: bool,
-                         split: int = 0, offset: float = 0.0):
+def _rms_weighted_kernel(residual: bool, split: int = 0, offset: float = 0.0):
     """The RMSNorm a model runs: y = x * rsqrt(mean(x^2) + eps) * w, and with
     `residual` vLLM's fused_add_rms_norm -- x + r is what is normalised, and
     it is written back to `r_out` -- one read of each operand.
@@ -807,15 +806,15 @@ def _rms_weighted_kernel(name: str, dtype, warps: int, residual: bool,
         (visit if TPW or EXACT else visit_writing)(write)
 
     if residual:
-        def body(x: hk.Tensor[dtype], r: hk.Tensor[dtype], w: hk.Tensor[dtype],
-                 o: hk.Tensor[dtype], r_out: hk.Tensor[dtype], *, ROWS=ROWS,
-                 COLS=COLS, WARPS=warps, TPW=0, FOLD=1, EXACT=0, EPS=1e-6):
-            core(x, w, o, r, r_out, ROWS, COLS, WARPS, TPW, FOLD, EXACT, EPS)
+        def body(x: hk.Tensor[T], r: hk.Tensor[T], w: hk.Tensor[T],
+                 o: hk.Tensor[T], r_out: hk.Tensor[T], *, warps=1, ROWS=ROWS,
+                 COLS=COLS, TPW=0, FOLD=1, EXACT=0, EPS=1e-6):
+            core(x, w, o, r, r_out, ROWS, COLS, warps, TPW, FOLD, EXACT, EPS)
     else:
-        def body(x: hk.Tensor[dtype], w: hk.Tensor[dtype], o: hk.Tensor[dtype],
-                 *, ROWS=ROWS, COLS=COLS, WARPS=warps, TPW=0, FOLD=1, EXACT=0,
+        def body(x: hk.Tensor[T], w: hk.Tensor[T], o: hk.Tensor[T],
+                 *, warps=1, ROWS=ROWS, COLS=COLS, TPW=0, FOLD=1, EXACT=0,
                  EPS=1e-6):
-            core(x, w, o, None, None, ROWS, COLS, WARPS, TPW, FOLD, EXACT, EPS)
+            core(x, w, o, None, None, ROWS, COLS, warps, TPW, FOLD, EXACT, EPS)
 
     # Ties to even for the residual: a sum of two bf16s is exact in fp32, so
     # its tie bit is set about one time in ten (measured: 10.7% of a 300x4096
@@ -825,9 +824,9 @@ def _rms_weighted_kernel(name: str, dtype, warps: int, residual: bool,
     defines = {"HK_BF16_ROUND": 2} if residual else {}
     if split:
         defines["HK_RT_HALF_SPLIT"] = split
-    k = hk.kernel(body, warps=warps, grid=_grid, name=name, defines=defines or None)
-    _BUILT[name] = (_rms_weighted_kernel, (dtype, warps, residual, split))
-    return k
+    return hk.kernel(body, grid=_grid, defines=defines or None,
+                     name=("addrmsw" if residual else "rmsw") + ("_h" if split else "")
+                     + _offset_tag(offset))
 
 
 _DTYPES = {"bf16": bf16, "fp16": fp16, "fp32": fp32}
@@ -879,9 +878,17 @@ WARP_COUNTS = tuple(range(1, MAX_WARPS + 1))
 #: every column count.
 KERNELS = {}
 
-#: name -> (factory, its arguments after the name), for offset_kernel().
+#: table name -> (its weighted kernel's factory, the factory's arguments, T, warps), for
+#: offset_kernel().
 _BUILT: dict = {}
 _OFFSET_KERNELS: dict = {}
+
+
+def _offset_tag(offset: float) -> str:
+    """`_wo<offset>` in a weighted kernel's name, or "" for none."""
+    if not offset:
+        return ""
+    return "_wo" + f"{float(offset):g}".replace("-", "m").replace(".", "p").replace("+", "")
 
 
 def offset_kernel(name: str, offset: float):
@@ -893,30 +900,35 @@ def offset_kernel(name: str, offset: float):
     key = (name, float(offset))
     k = _OFFSET_KERNELS.get(key)
     if k is None:
-        factory, args = _BUILT[name]
-        tag = f"{float(offset):g}".replace("-", "m").replace(".", "p").replace("+", "")
-        k = _OFFSET_KERNELS[key] = factory(f"{name}_wo{tag}", *args, offset=float(offset))
+        factory, args, dt, w = _BUILT[name]
+        k = _OFFSET_KERNELS[key] = factory(*args, offset=float(offset)).variant(T=dt, warps=w)
     return k
 
+
+#: The row kernels, one definition each (hk.T, warps) per form; KERNELS holds their
+#: specializations.
+ROW_REDUCE = {_k: _row_reduce_kernel(_k) for _k in ("rms", "layer", "softmax")}
+ROW_REDUCE["softmax_hb"] = _row_reduce_kernel("softmax", bounded=True, split=_SOFTMAX_SPLIT)
+RMS_WEIGHTED = {("addrmsw" if _res else "rmsw") + ("_h" if _sp else ""):
+                (_rms_weighted_kernel, (_res, _sp))
+                for _res in (False, True) for _sp in (0, _HALF_SPLIT)}
+RMS_WEIGHTED = {_n: (_f, _a, _f(*_a)) for _n, (_f, _a) in RMS_WEIGHTED.items()}
 
 for _s, _dt in _DTYPES.items():
     for _k in ("rms", "layer", "softmax"):
         for _w in WARP_COUNTS:
-            _n = f"{_k}_{_s}_w{_w}"
-            KERNELS[_n] = _row_reduce_kernel(_n, _dt, _k, _w)
+            KERNELS[f"{_k}_{_s}_w{_w}"] = ROW_REDUCE[_k].variant(T=_dt, warps=_w)
     if _s in _HALF_SPLIT_DTYPES:
         for _w in WARP_COUNTS:
-            _n = f"softmax_{_s}_w{_w}_hb"
-            KERNELS[_n] = _row_reduce_kernel(_n, _dt, "softmax", _w, bounded=True,
-                                             split=_SOFTMAX_SPLIT)
-    for _k, _res in (("rmsw", False), ("addrmsw", True)):
-        for _w in WARP_COUNTS:
-            _n = f"{_k}_{_s}_w{_w}"
-            KERNELS[_n] = _rms_weighted_kernel(_n, _dt, _w, _res)
-            if _s in _HALF_SPLIT_DTYPES:
-                KERNELS[_n + "_h"] = _rms_weighted_kernel(_n + "_h", _dt, _w, _res,
-                                                         split=_HALF_SPLIT)
-del _s, _dt, _k, _w, _n, _res
+            KERNELS[f"softmax_{_s}_w{_w}_hb"] = ROW_REDUCE["softmax_hb"].variant(T=_dt, warps=_w)
+    for _k in ("rmsw", "addrmsw"):
+        for _h in ("", "_h") if _s in _HALF_SPLIT_DTYPES else ("",):
+            _f, _a, _g = RMS_WEIGHTED[_k + _h]
+            for _w in WARP_COUNTS:
+                _n = f"{_k}_{_s}_w{_w}{_h}"
+                KERNELS[_n] = _g.variant(T=_dt, warps=_w)
+                _BUILT[_n] = (_f, _a, _dt, _w)
+del _s, _dt, _k, _w, _n, _h, _f, _a, _g
 
 
 # ---------------------------------------------------------------- strips
@@ -1182,7 +1194,7 @@ def strip_plan(cols: int, kind: str, nbytes: int, wave: Optional[int] = None,
     return warps, per, run, int(warps * per * span == cols)
 
 
-def _strip_kernel(name: str, dtype, kind: str, warps: int, offset: float = 0.0):
+def _strip_kernel(kind: str, offset: float = 0.0):
     """A row kernel on a strip: one workgroup a row, the row read once.
 
     `kind`: rms, layer, softmax (unweighted, as _row_reduce_kernel), rmsw
@@ -1194,7 +1206,7 @@ def _strip_kernel(name: str, dtype, kind: str, warps: int, offset: float = 0.0):
     move are masked.
     """
     @hk.func
-    def core(x, w, o, r, r_out, ROWS, CHUNKS, RUN, EXACT, RESERVE, EPS):
+    def core(x, w, o, r, r_out, ROWS, CHUNKS, RUN, EXACT, RESERVE, EPS, warps):
         if RESERVE:
             hk.lds.reserve(RESERVE)
         cw = CHUNKS * hk.arch.target().wave * RUN
@@ -1252,25 +1264,23 @@ def _strip_kernel(name: str, dtype, kind: str, warps: int, offset: float = 0.0):
         o.at[row, c0].store(v, bounded=bounded)
 
     if kind == "addrmsw":
-        def body(x: hk.Tensor[dtype], r: hk.Tensor[dtype], w: hk.Tensor[dtype],
-                 o: hk.Tensor[dtype], r_out: hk.Tensor[dtype], *, ROWS=1, CHUNKS=1,
+        def body(x: hk.Tensor[T], r: hk.Tensor[T], w: hk.Tensor[T],
+                 o: hk.Tensor[T], r_out: hk.Tensor[T], *, warps=1, ROWS=1, CHUNKS=1,
                  RUN=8, EXACT=1, RESERVE=0, EPS=1e-6):
-            core(x, w, o, r, r_out, ROWS, CHUNKS, RUN, EXACT, RESERVE, EPS)
+            core(x, w, o, r, r_out, ROWS, CHUNKS, RUN, EXACT, RESERVE, EPS, warps)
     elif kind == "rmsw":
-        def body(x: hk.Tensor[dtype], w: hk.Tensor[dtype], o: hk.Tensor[dtype], *,
+        def body(x: hk.Tensor[T], w: hk.Tensor[T], o: hk.Tensor[T], *, warps=1,
                  ROWS=1, CHUNKS=1, RUN=8, EXACT=1, RESERVE=0, EPS=1e-6):
-            core(x, w, o, None, None, ROWS, CHUNKS, RUN, EXACT, RESERVE, EPS)
+            core(x, w, o, None, None, ROWS, CHUNKS, RUN, EXACT, RESERVE, EPS, warps)
     else:
-        def body(x: hk.Tensor[dtype], o: hk.Tensor[dtype], *, ROWS=1, CHUNKS=1, RUN=8,
+        def body(x: hk.Tensor[T], o: hk.Tensor[T], *, warps=1, ROWS=1, CHUNKS=1, RUN=8,
                  EXACT=1, RESERVE=0, EPS=1e-6):
-            core(x, None, o, None, None, ROWS, CHUNKS, RUN, EXACT, RESERVE, EPS)
+            core(x, None, o, None, None, ROWS, CHUNKS, RUN, EXACT, RESERVE, EPS, warps)
 
     # Ties to even for the residual, as _rms_weighted_kernel says why.
     defines = {"HK_BF16_ROUND": 2} if kind == "addrmsw" else None
-    k = hk.kernel(body, warps=warps, grid=_strip_grid, name=name, defines=defines,
-                  noalias=True)
-    _BUILT[name] = (_strip_kernel, (dtype, kind, warps))
-    return k
+    return hk.kernel(body, grid=_strip_grid, name=f"strip_{kind}" + _offset_tag(offset),
+                     defines=defines, noalias=True)
 
 
 def _lnss_kernel(name: str, dtype, warps: int, residual: bool, round_r: bool, r_dtype, o_dtype,
@@ -1367,11 +1377,14 @@ def _strip_grid(p):
 #: (kind, dtype suffix, warps) -> strip Kernel; CHUNKS, RUN and EXACT are
 #: constexprs, so one entry covers every width.
 STRIP_KERNELS = {}
+#: The strip row kernels, one definition each (hk.T, warps) per kind.
+STRIP = {_k: _strip_kernel(_k) for _k in ("rms", "layer", "softmax", "rmsw", "addrmsw")}
 for _s, _dt in _DTYPES.items():
     for _k in ("rms", "layer", "softmax", "rmsw", "addrmsw"):
         for _w in WARP_COUNTS:
             _n = f"strip_{_k}_{_s}_w{_w}"
-            STRIP_KERNELS[_n] = _strip_kernel(_n, _dt, _k, _w)
+            STRIP_KERNELS[_n] = STRIP[_k].variant(T=_dt, warps=_w)
+            _BUILT[_n] = (_strip_kernel, (_k,), _dt, _w)
 del _s, _dt, _k, _w, _n
 
 

@@ -21,7 +21,8 @@ def built():
 
 def test_the_kernel_is_under_its_mangled_name(built):
     assert built.symbol.encode() in built.image
-    assert built.symbol == "_Z19rmsw_bf16_w4_kernel7globals"
+    name = "rmsw__Tbf16_warps4_kernel"          # norm.KERNELS["rmsw_bf16_w4"]'s symbol
+    assert built.symbol == f"_Z{len(name)}{name}7globals"
 
 
 def test_the_layout_covers_every_tensor(built):

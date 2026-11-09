@@ -360,8 +360,7 @@ def test_gfx950_elementwise_and_row_tiles_take_16x32_fragments():
     from hk.ops import elementwise, norm  # noqa: PLC0415
 
     def ir(k, arch, **c):
-        return hk.kernel(k.fn, arch=arch, warps=k.warps, grid=k.grid_fn,
-                         name=k.name).trace(**c).dump()
+        return k.for_arch(arch).trace(**c).dump()
 
     add = elementwise.KERNELS["add_bf16"]
     assert "frag 16x32" in ir(add, "gfx950", COLS=256)

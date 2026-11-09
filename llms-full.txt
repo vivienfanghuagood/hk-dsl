@@ -170,9 +170,15 @@ gated_silu(a, b, o, T=hk.bf16)      # T given: nothing is read
   and a call with `T=` or `warps=` about 0.2 us more than a plain kernel's call
   with a constexpr keyword (`tools/hk-bench/generic_launch.py`).
 
-`hk.ops` builds `fused.silu_mul_kernel`, `quant.quantize_kernel` and
-`quant.dequantize_kernel` this way; their tables (`fused.KERNELS[...]`) hold
-the specializations.
+`hk.ops` builds its dtype- and warps-varying kernels this way:
+`fused.silu_mul_kernel`, `fused.strip_silu_mul_kernel`, the rotary kernels
+(`fused.ROTARY`, `ROTARY16`, `ROTARY_HALVES`: one kernel each without and with
+positions -- a different signature), `quant.quantize_kernel`,
+`quant.dequantize_kernel`, `quant.strip_quantize_kernel` and norm's row kernels
+(`norm.ROW_REDUCE`, `norm.RMS_WEIGHTED`, `norm.STRIP`, by kind). Their tables
+(`fused.KERNELS[...]`, `norm.KERNELS[...]`) hold the specializations. What stays
+a factory argument is what changes the signature or is code: a positions
+tensor, a residual, a norm's kind, an elementwise op.
 
 ### Kernels made by a factory
 

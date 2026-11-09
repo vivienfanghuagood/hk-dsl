@@ -10,6 +10,14 @@ The next version's notes collect here until it is released.
 
 **SGLang-Diffusion: `sgld_qknorm` on SGLang 0.5.23.** 0.5.23 rewrote Qwen-Image 2.1's `apply_qk_norm_rope`; off CUDA it still falls back to the norm then `apply_rope`, now spelled `apply_rope(norm(x), rope)`. The route's engine contract looked for the old spelling only and turned the route off there; it now reads both.
 
+**hk.ops: the remaining dtype / warps factories as one kernel each** (#351). fused's strip silu_mul
+and rotary kernels (one definition each without and with positions), quant's strip quantize and
+norm's row kernels (rms / layer / softmax, the weighted RMSNorm and its fused add, the strip forms,
+and `offset_kernel`'s offset variants) are `hk.Tensor[hk.T]` + `warps` definitions; their tables hold
+the specializations under the same keys. The generated C++ of all 2110 table kernels, gfx1100 and
+gfx950, is byte-identical to the factories' but for the name (and of 20 offset kernels); the new
+names cost one recompile each.
+
 ## 0.9.17
 
 hk-dsl 0.9.17: one `@hk.kernel` definition serves every dtype and warp count -- a tensor annotated
