@@ -54,7 +54,11 @@ def inputs(device, shape=(4096, 14336)):
     return a, torch.randn_like(a), torch.empty_like(a)
 ```
 
-then run it after every change:
+A kernel written for every dtype (`hk.Tensor[hk.T]`) goes to the command
+line bound to the one you check: `gelu_mul_bf16 = gelu_mul.variant(T=hk.bf16)`
+in the file, then `python -m hk.check gelu_mul.py:gelu_mul_bf16`.
+
+Then run it after every change:
 
 ```bash
 python -m hk.check gelu_mul.py:gelu_mul            # reference, inputs and SHAPES from the file

@@ -105,32 +105,33 @@ expression over its parameter names. Everything else:
 ## Writing the kernel yourself
 
 When no template fits, write the kernel. A kernel is a Python function over
-tensors, traced into the hk dialect; this one adds two bf16 tensors:
+tensors, traced into the hk dialect; this one adds two tensors. `hk.Tensor[hk.T]`
+takes the dtype from the call, so one definition serves bf16 and fp16:
 
 ```python
 # add.py
 import hk
 
 @hk.kernel(grid=lambda p: (hk.cdiv(p.o.cols, 64), hk.cdiv(p.o.rows, 16), p.o.batch))
-def add(a: hk.Tensor[hk.bf16], b: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16]):
+def add(a: hk.Tensor[hk.T], b: hk.Tensor[hk.T], o: hk.Tensor[hk.T]):
     idx = hk.tile_coord(hk.arch.block_idx.z, 0, hk.arch.block_idx.y,
                         hk.arch.block_idx.x)
-    t = hk.RT(hk.bf16, 16, 64)
-    o[idx] = a[idx].load(t) + b[idx].load(t)
+    t = hk.RT(hk.fp32, 16, 64)                # the load converts to fp32
+    o[idx] = (a[idx].load(t) + b[idx].load(t)).to(o.dtype)
 ```
 
 ```python
 import torch
 from add import add
 
-print(add.trace().dump())       # the hk MLIR module -- no compiler, no GPU
-print(add.source())             # the HipKittens C++ it translates to
-print(add.build().report())     # hipcc and the resource gate -- no GPU
+print(add.trace(T=hk.bf16).dump())     # the hk MLIR module for bf16 -- no compiler, no GPU
+print(add.source(T=hk.bf16))           # the HipKittens C++ it translates to
+print(add.build(T=hk.bf16).report())   # hipcc and the resource gate -- no GPU
 
 a = torch.randn(256, 512, device="cuda", dtype=torch.bfloat16)
 b = torch.randn_like(a)
 out = torch.empty_like(a)
-add(a, b, out)                  # launches, on the GPU
+add(a, b, out)                  # launches a bf16 kernel, on the GPU (fp16 tensors: an fp16 one)
 torch.testing.assert_close(out, a + b, rtol=3e-2, atol=1e-2)
 ```
 
@@ -151,15 +152,15 @@ leaves bandwidth unused: the same tiling of a GELU-and-mul is slower than
 import hk
 
 @hk.kernel(grid=lambda p: (p.o.rows * hk.cdiv(p.o.cols, p.CW), 1, 1))
-def gelu_mul(a: hk.Tensor[hk.bf16], b: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16], *, CW=512):
-    S = hk.RS(hk.fp32, 1, CW, 8)                  # a register strip: one row, 8 bf16 (16 B) a lane
+def gelu_mul(a: hk.Tensor[hk.T], b: hk.Tensor[hk.T], o: hk.Tensor[hk.T], *, CW=512):   # hk.T: the call's dtype
+    S = hk.RS(hk.fp32, 1, CW, 8)                  # a register strip: one row, 8 16-bit values (16 B) a lane
     per_row = hk.cdiv(o.cols, CW)
     row = hk.arch.block_idx.x // per_row
     c0 = (hk.arch.block_idx.x - row * per_row) * CW
-    x = a.at[row, c0].load(S, bounded=True)       # bf16 -> fp32 on the load; past the end reads 0
+    x = a.at[row, c0].load(S, bounded=True)       # bf16 / fp16 -> fp32 on the load; past the end reads 0
     x.gelu(into=x)                                # hk.math.gelu: the tanh form, fp32 only
     x *= b.at[row, c0].load(S, bounded=True)
-    o.at[row, c0].store(x, bounded=True)          # fp32 -> bf16 on the store
+    o.at[row, c0].store(x, bounded=True)          # fp32 -> the output's dtype on the store
 ```
 
 `hk.check` times it against `torch.compile` on your GPU
@@ -170,28 +171,21 @@ register tiles (`hk.RT`), staged through LDS (`hk.ST`), for what feeds the
 matrix core: GEMM and attention, where the examples and the tuned
 `hk.ops` kernels are the models.
 
-One kernel per dtype (or per `warps`, or per anything a constexpr cannot
-carry) is a factory: put `@hk.specialize` on a function that defines the
-kernel and returns it, and it builds each variant once and names it after its
-arguments -- no `lru_cache`, no name string, no `body.__name__`
-([kernels made by a factory](language.md#kernels-made-by-a-factory)):
+Both kernels take their dtype from the call, and a keyword-only `warps`
+parameter would make the warp count a call argument too
+([one kernel for every dtype](language.md#one-kernel-for-every-dtype-and-warp-count)).
+Each (dtype, warps) is built once and cached. Where something needs the kernel
+for one dtype -- `trace`, `source` and `build` above, `hk.torch_op`, the
+`hk.check` command line -- bind it: `gelu_mul.variant(T=hk.bf16)`, or `T=` in
+the call. A per-dtype factory (`@hk.specialize`) is the pre-0.9.17 way; it
+still works.
 
-```python
-@hk.specialize
-def gelu_mul_for(*, dtype=hk.bf16):
-    @hk.kernel(grid=lambda p: (p.o.rows * hk.cdiv(p.o.cols, p.CW), 1, 1))
-    def gelu_mul(a: hk.Tensor[dtype], b: hk.Tensor[dtype], o: hk.Tensor[dtype], *, CW=512):
-        ...                                       # the body above
-    return gelu_mul
-
-gelu_mul_for(dtype=hk.fp16)                       # the kernel `gelu_mul_for__dtypefp16`
-```
-
-`add.build().report()` prints one line per kernel instantiation. Built for
-gfx1100 (ROCm 7.2.4) while writing this page, it read:
+`add.build(T=hk.bf16).report()` prints one line per kernel instantiation.
+Built for gfx1100 (a W7900D, ROCm 7.2.1, hk 0.9.17) while writing this page,
+it read:
 
 ```
-add_kernel(globals): vgpr=76->96 occ=16 lds=0 scratch=0 spill=0 hdrm=20
+add__Tbf16_kernel(globals): vgpr=75->96 occ=16 lds=0 scratch=0 spill=0 hdrm=21
 ```
 
 A kernel that spilled would not get this far: `build()` raises

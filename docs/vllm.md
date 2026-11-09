@@ -118,6 +118,14 @@ CPython 3.10 to 3.13 on Linux x86_64. An environment on Python 3.14 -- the
 `rocm/vllm` images tagged `py3.14`, for one -- cannot install it; use one on
 3.12.
 
+**The process aborts after a few hundred hk kernels** (a module load fails
+with `could not initialize the TSS key`, or the process dies without a Python
+error). hk-dsl before 0.9.18 built every kernel as a pybind11 module, and a
+process ran out of thread-specific-storage keys at about 250 of them: a server
+whose routes see many shapes and dtypes can get there. From 0.9.18 a kernel
+module costs nothing per process: `pip install -U hk-dsl`
+([the runtime](runtime.md#compiling)).
+
 **No `[hk]` line in the server's log.** vLLM did not load the plugin.
 Check that `pip show hk-dsl` works with the Python that runs vLLM, and that
 `VLLM_PLUGINS`, if you set it, includes `hk_attention`. If the line says
