@@ -6,7 +6,7 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
-**SGLang-Diffusion on gfx1201: `sgld_linear` and `sgld_rope` on by default.** Qwen-Image 2.1 1024^2 30 steps on one R9700: 28.25 -> 24.26 s an image against stock (1.16x, 6 alternating rounds, disjoint), where the default routes alone gave 1.09x; 42.27 dB from stock.
+**SGLang-Diffusion on gfx1201: `sgld_rope` on by default.** Qwen-Image 2.1's complex RoPE on `hk.ops.rotary_pairs` is 6.4-8.2x SGLang's per call on an R9700, bit for bit. `sgld_linear` stays off there: hk's GEMM is 1.08-1.12x `F.linear` at the model's projections on gfx1201.
 
 **SGLang-Diffusion: `sgld_qknorm` on SGLang 0.5.23.** 0.5.23 rewrote Qwen-Image 2.1's `apply_qk_norm_rope`; off CUDA it still falls back to the norm then `apply_rope`, now spelled `apply_rope(norm(x), rope)`. The route's engine contract looked for the old spelling only and turned the route off there; it now reads both.
 

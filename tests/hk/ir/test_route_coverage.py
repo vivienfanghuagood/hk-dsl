@@ -58,8 +58,6 @@ COVERAGE = {
     ("sgld_attn", "gfx1201"): "test_sdpa.py::test_patch_and_unpatch_round_trip",
     ("sgld_linear", "gfx1100"):
         "test_route_paths.py::test_sgld_linear_takes_a_dit_projection_through_hk",
-    ("sgld_linear", "gfx1201"):
-        "test_route_paths.py::test_sgld_linear_takes_a_dit_projection_through_hk",
     ("sgld_vaeconv", "gfx1100"):
         "test_route_paths.py::test_sgld_vaeconv_runs_wans_causal_conv3d_in_frame_chunks_and_matches",
     ("sgld_vaeconv", "gfx1201"):
