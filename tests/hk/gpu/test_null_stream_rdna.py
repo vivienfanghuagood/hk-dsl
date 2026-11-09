@@ -66,12 +66,16 @@ def test_a_side_stream_warns_once_and_a_synchronized_producer_is_exact():
     side = torch.cuda.Stream()
     side.wait_stream(torch.cuda.current_stream())
     with torch.cuda.stream(side):
-        # the producer: busy work on the side stream, then x
-        a = torch.randn(2048, 2048, device="cuda", dtype=torch.float16)
+        # the producer: busy work on the side stream, then x. Seeded and bounded:
+        # |a| <= 1 keeps every |a @ a| <= 2048, finite in fp16. (Unbounded fp16
+        # squaring overflowed for ~1% of random states; inf * 0 made x NaN.)
+        g = torch.Generator(device="cuda").manual_seed(1)
+        a = torch.rand(2048, 2048, device="cuda", dtype=torch.float16, generator=g) * 2 - 1
         for _ in range(8):
-            a = a @ a * 2048 ** -0.5
+            a = torch.tanh(a @ a * 2048 ** -0.5)
         x = x0 + a[:1, :1] * 0
         side.synchronize()
+        assert torch.isfinite(x).all()           # a bad producer is not a kernel failure
         with pytest.warns(RuntimeWarning, match="null stream"):
             y = norm.rms_norm(x, w)
         with warnings.catch_warnings():
