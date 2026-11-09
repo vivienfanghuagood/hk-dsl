@@ -173,12 +173,17 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "(history 46); gfx1201 (hk.ops.sdpa): 1.82-1.90x torch's SDPA at Wan2.1 / Qwen-Image "
        "shapes, error vs fp32 equal to it; Wan2.1 832x480x81 denoise 228.7 -> 142.4 s (1.61x)",
        part="attn"),
-    _R("sgld_linear", "sglang_diffusion", "HK_SGLD_LINEAR", True, ("gfx1100",),
+    _R("sgld_linear", "sglang_diffusion", "HK_SGLD_LINEAR", True, ("gfx1100", "gfx1201"),
        "the DiT's projections at M >= 1024 where hk measured faster, with or without a bias "
        "(a bias in the GEMM's store)",
        "Qwen-Image 2.1 with attention: 40.0 dB from stock and closer to fp32 than stock "
        "(history 46); Wan2.1 832x480x81's biased projections 1.22-1.26x F.linear, same error vs "
-       "fp32: 221.4 -> 211.4 s a video (1.047x, same process), inside stock's run-to-run spread",
+       "fp32: 221.4 -> 211.4 s a video (1.047x, same process), inside stock's run-to-run spread. "
+       "gfx1201 (with sgld_rope): Qwen-Image 2.1 1024^2 30 steps on one R9700 (SGLang 0.5.23, hk-dsl "
+       "0.9.17 with HK_SGLD_LINEAR=1 HK_SGLD_ROPE=1), same process, 6 ABBA rounds, the measured card "
+       "exclusive and the other cards at 0%: stock 28.25 s (27.47-29.46) -> 24.26 s (23.86-25.52) an "
+       "image, 1.16x, disjoint; 42.27 dB from stock. Default routes alone (sgld_attn): 1.09x (11-08 "
+       "row), so the two add ~3% an image; linear: hk 46080 / engine 2688 calls, rope: hk 23808 / 0",
        part="linear"),
     _R("sgld_convrot", "sglang_diffusion", "HK_SGLD_CONVROT", False, (),
        "ConvRot W8A8 linear for --quantization convrot_int8",
@@ -197,11 +202,16 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "MIOpen runs every channels-last VAE conv on its naive kernel, a 9-frame decode 2,680 s -> 4.1 s, "
        "closer to an fp32 VAE decode than stock (38.60 dB vs 38.53)",
        part="vaeconv"),
-    _R("sgld_rope", "sglang_diffusion", "HK_SGLD_ROPE", True, ("gfx1100",),
+    _R("sgld_rope", "sglang_diffusion", "HK_SGLD_ROPE", True, ("gfx1100", "gfx1201"),
        "Qwen-Image 2.1's complex RoPE on hk.ops.rotary_pairs (bf16, head_dim 128, one sequence)",
        "bit-identical to the engine's on every call (rotary_pairs reproduces torch's complex "
        "multiply); Qwen-Image 2.1 1024^2 30 steps: 28.88 -> 28.15 s a request (1.026x, same "
-       "process, ABBA x3)", part="rope"),
+       "process, ABBA x3). gfx1201 (with sgld_linear): Qwen-Image 2.1 1024^2 30 steps on one R9700 "
+       "(SGLang 0.5.23, hk-dsl 0.9.17 with HK_SGLD_LINEAR=1 HK_SGLD_ROPE=1), same process, 6 ABBA "
+       "rounds, the measured card exclusive and the other cards at 0%: stock 28.25 s (27.47-29.46) -> "
+       "24.26 s (23.86-25.52) an image, 1.16x, disjoint; 42.27 dB from stock. Default routes alone "
+       "(sgld_attn): 1.09x (11-08 row), so the two add ~3% an image; linear: hk 46080 / engine 2688 "
+       "calls, rope: hk 23808 / 0", part="rope"),
     _R("sgld_qknorm", "sglang_diffusion", "HK_SGLD_QKNORM", True, ("gfx1100",),
        "Qwen-Image 2.1's q / k RMSNorm and complex RoPE as one hk.ops.fused.rmsnorm_rotary_pairs "
        "launch (bf16, head_dim 128, one sequence)",

@@ -114,8 +114,8 @@ there with SGLang 0.5.23). Then generate as usual. hk then takes, by default:
 | route | switch | what | models | gfx1100 | gfx1201 |
 |---|---|---|---|---|---|
 | `sgld_attn` | `HK_SGLD_ATTN` | the DiT's attention (`--attention-backend torch_sdpa`) | Qwen-Image 2.1, Wan2.1 | on | on (from 0.9.14) |
-| `sgld_linear` | `HK_SGLD_LINEAR` | the DiT's projections where hk measured faster (with a bias: from 0.9.12) | Qwen-Image 2.1, Wan2.1 | on | off |
-| `sgld_rope` | `HK_SGLD_ROPE` | the complex RoPE, bit for bit | Qwen-Image 2.1 | on | off |
+| `sgld_linear` | `HK_SGLD_LINEAR` | the DiT's projections where hk measured faster (with a bias: from 0.9.12) | Qwen-Image 2.1, Wan2.1 | on | on (from 0.9.18) |
+| `sgld_rope` | `HK_SGLD_ROPE` | the complex RoPE, bit for bit | Qwen-Image 2.1 | on | on (from 0.9.18) |
 | `sgld_qknorm` | `HK_SGLD_QKNORM` | q / k RMSNorm + RoPE as one launch (from 0.9.12) | Qwen-Image 2.1 | on | off |
 | `sgld_vaeconv` | `HK_SGLD_VAECONV` | the VAE's conv3d as one conv2d (from 0.9.14; 2-frame calls before), which MIOpen would run on its slow reference kernel | Wan2.1 | on | on (from 0.9.14) |
 | `sgld_ditnorm` | `HK_SGLD_DITNORM` | the DiT block norms (residual + LayerNorm + scale / shift) as one launch each (from 0.9.16) | Wan2.1 | on | off |

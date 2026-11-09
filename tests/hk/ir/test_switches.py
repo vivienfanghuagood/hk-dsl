@@ -48,7 +48,7 @@ def test_on_by_default_on_gfx1100_is_every_route_validated_there():
 
 def test_on_by_default_on_gfx1201_is_every_route_validated_there():
     assert on(gpu="gfx1201") == {"vllm_gemm", "vllm_gptq", "vllm_quark", "vllm_int4", "vllm_moe", "vllm_moe_wna16",
-                                 "vllm_prefill", "sgld_attn", "sgld_vaeconv"}
+                                 "vllm_prefill", "sgld_attn", "sgld_vaeconv", "sgld_linear", "sgld_rope"}
 
 
 @pytest.mark.parametrize("gpu", ["gfx942", None])
