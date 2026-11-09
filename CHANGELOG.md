@@ -6,7 +6,7 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
-**A process loads as many hk kernels as it needs** (#PR, issue #350). Every hk kernel is an
+**A process loads as many hk kernels as it needs** (#353, issue #350). Every hk kernel is an
 extension module of its own, and they were pybind11 modules: with torch 2.10's pybind11 (the stock
 rocm/pytorch 7.2.3 image) each took four pthread thread-specific-storage keys of a process's 1024,
 so a process aborted ("Fatal Python error: Aborted", or "could not initialize the TSS key") after
