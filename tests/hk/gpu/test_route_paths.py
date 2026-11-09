@@ -19,7 +19,7 @@ torch = pytest.importorskip("torch")
 from hk.integration import sglang as hks  # noqa: E402
 from hk.integration import sglang_diffusion as sgld  # noqa: E402
 from hk.integration import sglang_moe, vllm_gemm, vllm_gptq, vllm_int4, vllm_moe  # noqa: E402
-from hk.integration import vllm_moe_wna16  # noqa: E402
+from hk.integration import vllm_moe_wna16, vllm_norm  # noqa: E402
 from hk.ops import moe, w4a16  # noqa: E402
 from hk.target import current_arch, get_target  # noqa: E402
 
@@ -434,6 +434,59 @@ def test_sglang_norm_takes_gemma_rmsnorm_through_hk_and_reverts(monkeypatch):
     finally:
         assert "norm -> sglang" in hks.revert()
     assert GemmaRMSNorm.forward_hip is orig
+
+
+def test_vllm_norm_takes_gemma_rmsnorm_through_hk_and_reverts(monkeypatch):
+    """vLLM's GemmaRMSNorm (forward_cuda = its native PyTorch ops) on hk's kernels: y = x_hat *
+    (1 + w) within half a bf16 unit of float64, the fused add out of place with its sum exact (x
+    and the residual untouched, as vLLM's native path); a call hk cannot take, or one while
+    torch.compile traces, goes to vLLM's forward and is counted."""
+    _on_here("vllm_norm")
+    calls = []
+
+    class GemmaRMSNorm:
+        def __init__(self, weight):
+            self.weight, self.variance_epsilon = weight, 1e-6
+
+        def forward_cuda(self, x, residual=None):
+            calls.append(x.shape)
+            return "vllm"
+
+    _stand_in(monkeypatch, vllm_norm._HOME, GemmaRMSNorm=GemmaRMSNorm)
+    orig = GemmaRMSNorm.forward_cuda
+    g = torch.Generator(device="cuda").manual_seed(6)
+    w = (torch.randn(2048, device="cuda", generator=g) * 0.1).to(B)
+    layer = GemmaRMSNorm(w)
+
+    def ref(z):
+        z = z.double()
+        return z * torch.rsqrt(z.pow(2).mean(-1, keepdim=True) + 1e-6) * (1.0 + w.double())
+
+    def ulps(got, want):
+        e = torch.floor(torch.log2(want.to(B).double().abs().clamp_min(2.0 ** -14)))
+        return ((got.double() - want).abs() / torch.pow(2.0, e - 7)).max().item()
+
+    try:
+        assert "norm -> hk" in vllm_norm.apply()
+        for m in (1, 8, 300):
+            x = torch.randn(m, 2048, device="cuda", dtype=B, generator=g)
+            r = (torch.randn(m, 2048, device="cuda", generator=g) * 4).to(B)
+            z, want_r = x.double() + r.double(), (x.float() + r.float()).to(B)
+            assert ulps(layer.forward_cuda(x), ref(x)) <= 0.51
+            x0, r0 = x.clone(), r.clone()
+            y, h = layer.forward_cuda(x, r)
+            assert torch.equal(h, want_r) and torch.equal(x, x0) and torch.equal(r, r0)
+            assert ulps(y, ref(z)) <= 0.51
+        before = vllm_norm.STATS["hk"]
+        assert layer.forward_cuda(torch.randn(2048, 8, device="cuda", dtype=B).t()) == "vllm"
+        assert vllm_norm.STATS["x not contiguous"] == 1 and vllm_norm.STATS["hk"] == before
+        monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+        assert layer.forward_cuda(torch.randn(8, 2048, device="cuda", dtype=B)) == "vllm"
+        assert vllm_norm.STATS["torch.compile (inductor fuses it)"] == 1
+        assert len(calls) == 2
+    finally:
+        assert "norm -> vllm" in vllm_norm.revert()
+    assert GemmaRMSNorm.forward_cuda is orig
 
 
 def test_sglang_norm_is_ordered_on_the_engines_stream(monkeypatch):

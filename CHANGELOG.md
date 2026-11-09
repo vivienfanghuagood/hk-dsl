@@ -6,6 +6,15 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+**vLLM: Gemma-style RMSNorm on hk in eager mode** (`vllm_norm`, on by default on gfx1100; #PR). vLLM's
+`GemmaRMSNorm` (Gemma, the Qwen3.5 family, MiniCPM-V-4.7's text models) has no fused kernel on
+ROCm and runs as ~8 PyTorch ops a norm unless the model is compiled; a deployment served eager
+(MiniCPM-V-4.7's production configuration) is bound by those launches at one request. The route
+runs the eager calls on hk's fused (add+)RMSNorm at weight offset 1. On W7900Ds, route off vs on, 4
+alternating rounds: MiniCPM-V-4.7-1B TPOT at 1 / 4 / 8 requests 1.28x / 1.21x / 1.24x, the 35B-A3B
+(TP2) 1.15x / 1.11x / 1.10x, TTFT 1.06-1.07x, GSM8K-300 equal; outputs within 1 bf16 ulp of vLLM's,
+residuals bit-equal. Calls under torch.compile stay vLLM's.
+
 ## 0.9.18
 
 hk-dsl 0.9.18: a process can load as many hk kernels as it needs -- every kernel module is now a plain CPython
