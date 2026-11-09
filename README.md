@@ -15,6 +15,15 @@ in it, for RDNA and CDNA, with build-time checks against the errors that fail
 silently (spills, missing waits, MFMA hazards).
 [What it is and is not](docs/positioning.md).
 
+![One 32k-token request to MiniCPM5-2B, stock vLLM (left) and vLLM with hk-dsl (right): the first token after 11.8 s and after 4.4 s](docs/assets/readme-demo-ttft.gif)
+
+*Radeon PRO W7900D, MiniCPM5-2B, one 32k-token prompt, vLLM without and with hk-dsl 0.9.18: first token after
+11.8 s and after 4.4 s (2.71x) in this recording; both arms in one process, recorded one after the other and
+played side by side at real speed, each request with its own ~32k-token document, so the prompts differ by a
+few tokens ([how](tools/hk-bench/serving/readme_demo/README.md)). The number the project
+quotes is the [scorecard](docs/performance/scorecard.md)'s, over rounds: TTFT at 32k 12,550 -> 4,247 ms, 2.95x
+(hk 0.9.14).*
+
 ## Quick start
 
 **Faster vLLM and SGLang on Radeon.** One command, in the environment that
