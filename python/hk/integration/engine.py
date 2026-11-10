@@ -197,6 +197,9 @@ class Op(Patch):
         lib.impl(self.op_name, guarded, dispatch)
         torch.library.register_fake(self.name, self.fake, lib=lib)
         self._lib = lib
+        # Resolved now, not on the first call: torch.compile guards on this attribute, and one
+        # filled in by a call it traced fails that guard on the next and recompiles the graph.
+        self._op = getattr(getattr(torch.ops, self.ns), self.op_name)
         if dispatch == "CUDA":
             self._direct = (guarded, torch.Tensor, torch.compiler.is_compiling)
         return self

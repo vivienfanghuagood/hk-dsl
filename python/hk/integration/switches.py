@@ -114,8 +114,9 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "at 1 / 4 / 8 concurrent requests (disjoint), TTFT level (prefill stays vLLM's there)"),
     _R("vllm_norm", "vllm", "HK_VLLM_NORM", True, ("gfx1100", "gfx1201"),
        "vLLM's GemmaRMSNorm (Gemma, the Qwen3.5 family, MiniCPM-V-4.7's text models) on hk's "
-       "fused (add+)RMSNorm at weight offset 1, where vLLM runs it as PyTorch ops: the eager calls "
-       "(under torch.compile inductor fuses it, and it stays vLLM's)",
+       "fused (add+)RMSNorm at weight offset 1, where vLLM runs it as PyTorch ops: the eager calls; "
+       "HK_VLLM_NORM=compile also takes the calls torch.compile traces, as one CUDA-graph-safe op "
+       "(opt-in until measured end to end)",
        "MiniCPM-V-4.7 1B and 35B-A3B (TP2) on W7900Ds, their production args (enforce_eager), hk "
        "0.9.18, route off vs on, engines rebuilt per block, 4 alternating rounds, all disjoint: TPOT "
        "at 1 / 4 / 8 requests 1.28x / 1.21x / 1.24x (1B) and 1.15x / 1.11x / 1.10x (35B), TTFT 8k "
