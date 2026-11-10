@@ -1253,11 +1253,12 @@ def test_flash_packed_dsplit(kv_splits, group, warps, page, kv_order):
 
 
 @pytest.mark.skipif(not _route_arch(), reason="the route is gfx1100's and gfx1201's")
-def test_a_cache_past_4_gib_goes_to_vllm(monkeypatch):
-    """hk's buffer loads address 4 GiB from a tensor's base (vllm_prefill.SPAN_LIMIT): over a
-    TRITON_ATTN cache of Qwen3.8's shape past that (4.3 GB, the requests' pages at its far end) a
-    decode batch and a prefill chunk beside a decode go to vLLM's kernel -- its answer exactly,
-    hk's kernels not run (they read the wrong pages there, or fault)."""
+def test_a_cache_past_4_gib_is_read_right(monkeypatch):
+    """A TRITON_ATTN cache past 4 GiB (Qwen3.8's shape, 4.3 GB; a hybrid model's shared cache is
+    tens of GB): hk's kernels address each tile from a pointer formed in 64 bits (HipKittens'
+    gl index), so with the requests' pages at the cache's far end a prefill batch is hk's and
+    matches the reference. (In 32 bits the index wrapped at 2^31 elements: the wrong pages, or
+    a fault -- such calls went to vLLM, and every prefill of MiniCPM-V-4.7-1B's 32 GB cache did.)"""
     import inspect
 
     from hk.integration import vllm_prefill as vp
@@ -1269,11 +1270,17 @@ def test_a_cache_past_4_gib_goes_to_vllm(monkeypatch):
     nb = (1 << 32) // (2 * page * hkv * d * 2) + 64
     st = torch.zeros(nb, 2, page, hkv, d, device="cuda", dtype=torch.bfloat16)
     k, v = st[:, 0], st[:, 1]
-    assert vp.span_why_not(vp._flash_kv(k, v)[0])
+    kv = vp._flash_kv(k, v)[0]
+    span = (sum((n - 1) * s for n, s in zip(kv.shape, kv.stride())) + 1) * kv.element_size()
+    assert span > (1 << 32), span                       # K's view, past 4 GiB
+
+    def _never(*a, **kw):
+        raise AssertionError("the route left the call to vLLM's kernel")
+
     g = torch.Generator(device="cuda").manual_seed(5)
-    monkeypatch.setattr(vp, "_ORIG_U", _unified_ref)
+    monkeypatch.setattr(vp, "_ORIG_U", _never)
     monkeypatch.setattr(vp, "_U_SIG", inspect.signature(_unified_ref))
-    for reqs in ([(4000, 1), (3000, 1)], [(4000, 64), (3000, 1)]):
+    for reqs in ([(0, 1024)], [(1024, 2048)]):         # batches the guard takes (no decodes beside)
         pages = [-(-(c + n) // page) for c, n in reqs]
         table = torch.zeros(len(reqs), max(pages), dtype=torch.int32, device="cuda")
         last = nb
@@ -1293,12 +1300,12 @@ def test_a_cache_past_4_gib_goes_to_vllm(monkeypatch):
                     q_descale=None, k_descale=None, v_descale=None)
         want = torch.empty_like(q)
         _unified_ref(out=want, **args)
-        before = vp.PATCH.stats["hk"] + vp.PATCH.stats["decode"]
+        before = vp.PATCH.stats["hk"]
         out = torch.full_like(q, float("nan"))
         vp.unified_attention(out=out, **args)
         torch.cuda.synchronize()
-        assert vp.PATCH.stats["hk"] + vp.PATCH.stats["decode"] == before, reqs
-        assert torch.equal(out.view(torch.int16), want.view(torch.int16)), reqs
+        assert vp.PATCH.stats["hk"] > before, reqs
+        _attn_ref.check(out, want)
 
 
 #: Qwen3.8's shape: a 64-token chunk beside decodes whose work (0.08 of the chunk's) KVS_DEC_RATIO

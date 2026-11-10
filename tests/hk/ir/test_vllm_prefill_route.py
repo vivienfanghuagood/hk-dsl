@@ -189,10 +189,11 @@ def test_a_declined_batch_is_vllms_call_unchanged(monkeypatch, capsys, arch):
     assert "declined" in err and "HK_VLLM_PREFILL_GUARD=0" in err
 
 
-def test_a_cache_view_past_4_gib_goes_to_vllm(monkeypatch):
-    """hk's buffer loads address 4 GiB from a tensor's base: span_why_not measures a view's bytes
-    from its strides (no memory needed), and the prefill, decode and ROCM_ATTN checks refuse a
-    cache past SPAN_LIMIT -- the call falls back to vLLM's kernel."""
+def test_a_cache_view_past_4_gib(monkeypatch):
+    """span_why_not measures a view's bytes from its strides (no memory needed). ROCM_ATTN's
+    checks refuse a cache past SPAN_LIMIT (those kernels take the whole cache as one buffer);
+    TRITON_ATTN's prefill and decode checks do not, as their kernels address each tile from a
+    pointer formed in 64 bits (HipKittens' gl index)."""
     from hk.integration import switches
 
     elems = vp.SPAN_LIMIT // 2                                   # bf16
@@ -204,19 +205,10 @@ def test_a_cache_view_past_4_gib_goes_to_vllm(monkeypatch):
 
     monkeypatch.setattr(switches, "arch", lambda: "gfx1100")
     a = _triton_call([(4096, 128)])
-    assert vp.u_why_not(a) == ""
-    monkeypatch.setattr(vp, "SPAN_LIMIT", 1024)
-    assert "GiB" in vp.u_why_not(a)
-    calls = []
-    monkeypatch.setattr(vp, "GUARD", False)
-    monkeypatch.setattr(vp, "_ORIG_U", lambda *x, **k: calls.append(1))
-    before = vp.PATCH.stats["fallback"]
-    vp.unified_attention(**a)
-    assert calls and vp.PATCH.stats["fallback"] == before + 1
     d = _triton_call([(16384, 1), (8192, 1)], d=256, hkv=1)
     d["max_seqlen_q"] = 1
-    assert "GiB" in vp.d_why_not(d)
-    monkeypatch.setattr(vp, "SPAN_LIMIT", 1 << 32)
+    monkeypatch.setattr(vp, "SPAN_LIMIT", 1024)                  # every cache is "past" it
+    assert vp.u_why_not(a) == ""
     assert vp.d_why_not(d) == ""
 
 
