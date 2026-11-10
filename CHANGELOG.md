@@ -6,6 +6,11 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+- vLLM's prefill route takes TRITON_ATTN caches past 4 GiB. HipKittens' RDNA `gl` formed a tile's element
+  index in 32 bits, which wrapped at 2^31 elements, so such a cache was declined; now it is 64-bit
+  (HipKittens #6). On a hybrid model -- MiniCPM-V-4.7, the Qwen3.5 family, whose attention layers share one
+  cache of tens of GB -- every prefill call had gone to vLLM's kernel. ROCM_ATTN's caches keep the limit.
+
 - `vllm_norm` can take the calls torch.compile traces (`HK_VLLM_NORM=compile`, opt-in): GemmaRMSNorm's
   `forward_native` on hk's kernels through two opaque custom ops, `torch.ops.hk_vllm.gemma_rms_norm` and
   `gemma_add_rms_norm`, safe to capture in a CUDA graph; the engine gets its own compile cache.

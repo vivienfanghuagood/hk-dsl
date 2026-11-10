@@ -91,8 +91,10 @@ def _op(head_dim: int, group: int, scale: Optional[float], page: int, fp16: bool
 
 #: hk's kernels read a tensor through a buffer resource -- 32-bit byte offsets from its base -- so a
 #: cache view spanning 4 GiB or more wraps: the wrong page read, or a fault. Measured on gfx1100 with
-#: Qwen3.8's cache (4 kv heads, d256): 2^20 tokens a layer (4.3 GB) faults the prefill and the decode,
-#: 983k (4.0 GB) is read right. A call over such a cache goes to vLLM's kernel.
+#: Qwen3.8's cache (4 kv heads, d256): 2^20 tokens a layer (4.3 GB) faulted the prefill and the
+#: decode, 983k (4.0 GB) was read right. On TRITON_ATTN's cache (layout "flash") the kernels now
+#: address each tile from a pointer formed in 64 bits (HipKittens' gl index), so the limit holds
+#: only where a kernel takes the whole cache as one buffer: ROCM_ATTN's strided caches.
 SPAN_LIMIT = 1 << 32
 
 
@@ -671,7 +673,7 @@ def u_why_not(a: dict) -> str:
     if kv is None:
         return (f"key/value caches {tuple(k.shape)} strides {tuple(k.stride())} (V at +"
                 f"{(v.data_ptr() - k.data_ptr()) // k.element_size()}): not a layout hk reads")
-    return span_why_not(kv[0])
+    return ""                        # any size: tiles are addressed in 64 bits (SPAN_LIMIT)
 
 
 #: The default-on rule's per-shape clause on TRITON_ATTN: hk takes a batch with prefill in it
@@ -1002,7 +1004,7 @@ def d_why_not(a: dict) -> str:
     kv = _flash_kv(k, a["v"])
     if kv is None:
         return "key/value caches: not a layout hk reads"
-    return span_why_not(kv[0])
+    return ""                        # any size: tiles are addressed in 64 bits (SPAN_LIMIT)
 
 
 def _decode_ops(head_dim: int, group: int, page: int, order: str, splits: int,
