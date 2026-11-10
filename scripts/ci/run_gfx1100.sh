@@ -36,6 +36,10 @@ OUT=$GITHUB_WORKSPACE/gha-report
 mkdir -p "$OUT"
 # Run the script on stdin in the pod.
 pod() { ssh -o BatchMode=yes -o ServerAliveInterval=30 "$JUMP" "kubectl exec -i $POD -- bash -s" {REAP}>&- ; }
+# The jump host sometimes closes a new connection at once ("Connection closed by ... port 443"; three
+# times on 11-09/10, each time fine seconds later). Calls that are safe to repeat retry; starting the
+# run does not (it could start twice) -- a probe that the pod answers goes first instead.
+retry() { local t; for t in 1 2 3 4; do "$@" && return 0; [ $t = 4 ] || sleep $((t * 10)); done; return 1; }
 
 # Cancellation (scripts/ci/cancel.sh): the runner sends SIGINT,
 # then SIGTERM 7.5 s later, to the step's shell alone -- gpu.yml execs this script, so that is this
@@ -61,7 +65,7 @@ trap 'stop; exit 143' TERM
 trap 'stop; exit 129' HUP
 trap 'stop' EXIT
 
-IP=$(ssh -o BatchMode=yes "$JUMP" "getent ahostsv4 $PROXY | head -1 | cut -d' ' -f1" {REAP}>&-)
+IP=$(retry ssh -o BatchMode=yes "$JUMP" "getent ahostsv4 $PROXY | head -1 | cut -d' ' -f1" {REAP}>&-)
 [[ $IP =~ ^[0-9.]+$ ]] || { echo "::error::cannot resolve the proxy (HK_CI_PROXY) on the jump host (HK_CI_JUMP)"; exit 1; }
 echo "::add-mask::$IP"
 MODE=${HK_CI_MODE:-}
@@ -74,6 +78,8 @@ if [ "$MODE" = install ]; then
     KITTAR=$(mktemp); tar -C "$KIT" -czf "$KITTAR" .
     KITSUM=$(sha256sum "$KITTAR" | cut -d' ' -f1)
 fi
+retry ssh -o BatchMode=yes "$JUMP" "kubectl exec $POD -- true" {REAP}>&- \
+    || { echo "::error::the pod (HK_CI_POD) does not answer through the jump host (HK_CI_JUMP)"; exit 1; }
 { echo "mkdir -p $DIR"
   if [ "$MODE" = install ]; then
       echo "mkdir -p $R/kit && base64 -d > $R/kit.tgz <<'B64'"; base64 -w0 "$KITTAR"; echo; echo "B64"
@@ -95,7 +101,8 @@ for i in $(seq 360); do     # 3 hours
     fi
     [[ $st == done* ]] && { DONE=1; break; }
 done
-echo "cd $R && tar -cf - \$(ls result.json report.txt build.log driver.log 2>/dev/null)" | pod | tar -xf - -C "$OUT"
+fetch() { echo "cd $R && tar -cf - \$(ls result.json report.txt build.log driver.log 2>/dev/null)" | pod | tar -xf - -C "$OUT" && [ -f "$OUT/result.json" ]; }
+retry fetch
 [ -f "$OUT/result.json" ] || { echo "::error::no result from the pod"; exit 1; }
 [ -n "$KITSUM" ] && rm -f "$KITTAR"
 if [ "$MODE" = install ]; then
