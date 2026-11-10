@@ -129,19 +129,10 @@ vLLM rows: vLLM on ROCm 7.14 (TheRock), torch 2.13. SGLang-Diffusion rows: upstr
 | | TTFT 512 / 2k tokens (ms) | 375 / 1,507 | 284 / 1,165 | 1.32x / 1.29x |
 | Qwen3.8-27B AWQ int4 (AMD Quark W4A16) (hk 0.9.16) | TPOT, 4 / 8 concurrent (ms) | 37.8 / 61.9 | 32.4 / 34.4 | 1.17x / 1.80x |
 | | TTFT 512 / 2k tokens (ms) | 333 / 1,401 | 274 / 1,122 | 1.22x / 1.25x |
-| MiniCPM-V-4.7 1B, eager: the `vllm_norm` route (hk 0.9.19 code, `HK_VLLM_NORM=1`), route off / on | TPOT, 1 / 4 / 8 concurrent (ms) | 21.41 / 22.49 / 22.85 | 16.80 / 18.01 / 19.13 | 1.27x / 1.25x / 1.20x |
-| | TTFT 2k / 8k (ms) | 75.6 / 352.2 | 67.6 / 321.0 | 1.12x / 1.10x |
-| | GSM8K (300, greedy) | 82.00% | 81.33% | not significant (p 0.79) |
 | Wan2.1-T2V-1.3B, 832x480x81, 20 steps (hk 0.9.14) | seconds per video | 283.6 (282.0-295.1) | 178.0 (177.4-190.0) | 1.59x |
 | Qwen-Image 2.1, 1024x1024, 30 steps (hk 0.9.14) | seconds per image | 27.4 (27.3-28.1) | 25.1 (25.0-25.1) | 1.09x |
 
-- **The `vllm_norm` row** is the same route A/B as on the W7900D: 6 alternating rounds in one process, engine rebuilt
-  per block, every range disjoint. The engine runs eager (`enforce_eager`, as MiniCPM-V-4.7 is served), TRITON_ATTN,
-  16k context. The route is on by default on gfx1201 from the next release (#366); on hk 0.9.19 it is
-  `HK_VLLM_NORM=1`. It was measured from the source tree at the route's merge, whose route and kernel code is the
-  same as the 0.9.19 wheel's. Ranges: route off 20.87-23.10 / 21.48-23.16 / 22.24-26.63 ms, route on 16.33-17.91 /
-  17.47-20.13 / 18.67-21.04 ms.
-- **Single-request TPOT on R9700 is not quoted** for the GPTQ / AWQ rows. It is bimodal per engine build in both arms (about 29 ms or 37 ms,
+- **Single-request TPOT on R9700 is not quoted.** It is bimodal per engine build in both arms (about 29 ms or 37 ms,
   depending on the build, not on hk); within a state hk and stock are equal (1.00x).
 - **One GPTQ round was discarded.** Another user's process ran inside its stock block; the row uses the other 5 of 6
   rounds.
