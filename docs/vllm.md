@@ -90,7 +90,7 @@ to vLLM's own kernel:
 | GPTQ 4-bit linear layers (symmetric, no act-order) | `vllm_gptq` | on | on | Qwen3.8-27B-GPTQ-Int4 |
 | AMD Quark W4A16 linear layers (symmetric int4) | `vllm_quark` | on | on | Qwen3.8-27B-Quark-AWQ-INT4-W4A16 |
 | bf16 MoE experts | `vllm_moe` | on | on | OLMoE-1B-7B |
-| Gemma-style RMSNorm (Gemma, Qwen3.5 family, MiniCPM-V-4.7) served eager (`enforce_eager`) | `vllm_norm` | on | off | MiniCPM-V-4.7 1B and 35B-A3B |
+| Gemma-style RMSNorm (Gemma, Qwen3.5 family, MiniCPM-V-4.7) served eager (`enforce_eager`) | `vllm_norm` | on | on | MiniCPM-V-4.7 1B and 35B-A3B, Qwen3.5-9B |
 | AWQ 4-bit MoE experts | `vllm_moe_wna16` | on | on | Qwen3.6-35B-A3B-AWQ |
 | attention prefill (head size 64, 128 or 256; bf16, and from 0.9.15 fp16) | `vllm_prefill` | on | on | MiniCPM5-2B, Qwen3-8B, Qwen3.8-27B, MiniCPM-V-4.7 |
 | a vision encoder, with `--mm-encoder-attn-backend TORCH_SDPA` | `vllm_sdpa` | on | off | InternVL2-2B |
