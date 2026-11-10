@@ -4,10 +4,24 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
-## Unreleased
+## 0.9.20
 
-- `vllm_norm` is on by default on gfx1201 too. On an R9700, vLLM eager, MiniCPM-V-4.7-1B: TPOT 1.27x / 1.25x / 1.20x
-  at 1 / 4 / 8 requests, TTFT 1.10-1.12x, GSM8K-300 equal; Qwen3.5-9B 1.09-1.10x.
+hk-dsl 0.9.20: on gfx1201 (R9700), vLLM's Gemma-style RMSNorm runs on hk's fused (add+)RMSNorm in eager mode by
+default (`vllm_norm`, as on gfx1100 since 0.9.19). No change to the dialect (`hk-dialect-8`).
+
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels below are the same files.
+
+    pip install hk_dsl-0.9.20-cp312-cp312-manylinux_2_35_x86_64.whl
+
+### Changes
+
+**vLLM: `vllm_norm` on by default on gfx1201 too** (#366). On an R9700, vLLM eager, MiniCPM-V-4.7-1B: TPOT 1.27x / 1.25x / 1.20x
+at 1 / 4 / 8 requests, TTFT 1.10-1.12x, GSM8K-300 equal; Qwen3.5-9B 1.09-1.10x.
+
+**Docs.** The scorecard has a W7900D row for the `vllm_norm` route on MiniCPM-V-4.7 1B, eager (#368). The README's demo
+GIF is redone on MiniCPM-V-4.7-1B with the same prompt and identical output on both sides (#365).
 
 ## 0.9.19
 
