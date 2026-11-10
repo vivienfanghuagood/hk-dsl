@@ -6,6 +6,12 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+- `vllm_norm` can take the calls torch.compile traces (`HK_VLLM_NORM=compile`, opt-in): GemmaRMSNorm's
+  `forward_native` on hk's kernels through two opaque custom ops, `torch.ops.hk_vllm.gemma_rms_norm` and
+  `gemma_add_rms_norm`, safe to capture in a CUDA graph; the engine gets its own compile cache.
+- `engine.Op` resolves its torch op when it is defined, so torch.compile no longer recompiles a graph on the
+  second call of a route's op.
+
 ## 0.9.20
 
 hk-dsl 0.9.20: on gfx1201 (R9700), vLLM's Gemma-style RMSNorm runs on hk's fused (add+)RMSNorm in eager mode by

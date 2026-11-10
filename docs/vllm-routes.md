@@ -564,9 +564,19 @@ of the step. (`compilation_config.custom_ops=["+rms_norm"]` does not reach this 
 `hk/integration/vllm_norm.py` (`HK_VLLM_NORM`, on by default on gfx1100 and gfx1201) wraps
 `GemmaRMSNorm.forward_cuda`: hk's weighted norm kernels at weight offset 1 (the stored w, the one
 added in fp32 inside the kernel, as vLLM's math does), the residual add fused, out of place as
-vLLM's native path ((y, x + residual) or y), on torch's current stream. Calls while torch.compile
-traces, and inputs hk's kernels do not take (not a contiguous 16-bit tensor, a weight of another
-dtype or shape, a residual unlike x), keep vLLM's path; `vllm_norm.STATS` counts both by reason.
+vLLM's native path ((y, x + residual) or y), on torch's current stream. Inputs hk's kernels do
+not take (not a contiguous 16-bit tensor, a weight of another dtype or shape, a residual unlike x)
+keep vLLM's path; `vllm_norm.STATS` counts them by reason.
+
+Under torch.compile (vLLM's default when `enforce_eager` is off) vLLM traces the layer's
+`forward_native` and inductor generates a kernel for the norm. `HK_VLLM_NORM=compile` routes those
+calls too: the route patches `forward_native` and calls hk's kernels through two opaque custom
+ops, `torch.ops.hk_vllm.gemma_rms_norm` and `gemma_add_rms_norm`, so the compiled graph has one
+node per norm (dynamic rows, no recompiles) and a CUDA graph captures one kernel with no host
+sync. The engine gets a compile cache of its own (`.../hk-norm`). On a W7900D, with a linear
+between norms as in a decoder layer and both sides compiled and captured, hk's norm is 4.4-7.5 us
+faster than inductor's (hidden 1024 and 2048, 1 to 4,096 rows), closer to float64; this is
+opt-in until it is measured end to end.
 
 Checked on MiniCPM-V-4.7 with its production args on W7900Ds, hk 0.9.18, the route off and on,
 one process, engines rebuilt per block, 4 alternating rounds (ranges disjoint):

@@ -436,17 +436,22 @@ def test_sglang_norm_takes_gemma_rmsnorm_through_hk_and_reverts(monkeypatch):
     assert GemmaRMSNorm.forward_hip is orig
 
 
-def test_vllm_norm_takes_gemma_rmsnorm_through_hk_and_reverts(monkeypatch):
+def test_vllm_norm_takes_gemma_rmsnorm_through_hk_and_reverts(monkeypatch, tmp_path):
     """vLLM's GemmaRMSNorm (forward_cuda = its native PyTorch ops) on hk's kernels: y = x_hat *
     (1 + w) within half a bf16 unit of float64, the fused add out of place with its sum exact (x
-    and the residual untouched, as vLLM's native path); a call hk cannot take, or one while
-    torch.compile traces, goes to vLLM's forward and is counted."""
+    and the residual untouched, as vLLM's native path); a call hk cannot take goes to vLLM's
+    forward and is counted, and one while torch.compile traces takes hk's op and counts nothing."""
     _on_here("vllm_norm")
+    monkeypatch.setenv("VLLM_CACHE_ROOT", str(tmp_path))     # apply() names the compile cache
     calls = []
 
     class GemmaRMSNorm:
         def __init__(self, weight):
             self.weight, self.variance_epsilon = weight, 1e-6
+
+        def forward_native(self, x, residual=None):
+            calls.append(x.shape)
+            return "vllm"
 
         def forward_cuda(self, x, residual=None):
             calls.append(x.shape)
@@ -480,13 +485,83 @@ def test_vllm_norm_takes_gemma_rmsnorm_through_hk_and_reverts(monkeypatch):
         before = vllm_norm.STATS["hk"]
         assert layer.forward_cuda(torch.randn(2048, 8, device="cuda", dtype=B).t()) == "vllm"
         assert vllm_norm.STATS["x not contiguous"] == 1 and vllm_norm.STATS["hk"] == before
+        assert layer.forward_native(x) == "vllm"             # compiled calls: opt-in (HK_VLLM_NORM=compile)
+        n = sum(vllm_norm.STATS.values())
         monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
-        assert layer.forward_cuda(torch.randn(8, 2048, device="cuda", dtype=B)) == "vllm"
-        assert vllm_norm.STATS["torch.compile (inductor fuses it)"] == 1
+        x = torch.randn(8, 2048, device="cuda", dtype=B, generator=g)
+        assert ulps(layer.forward_cuda(x), ref(x)) <= 0.51
+        assert sum(vllm_norm.STATS.values()) == n          # nothing written while tracing
         assert len(calls) == 2
     finally:
         assert "norm -> vllm" in vllm_norm.revert()
     assert GemmaRMSNorm.forward_cuda is orig
+
+
+def test_vllm_norm_compiles_into_one_op_and_replays_in_a_cuda_graph(monkeypatch, tmp_path):
+    """Under torch.compile (vLLM traces forward_native, its custom ops off) the route is one opaque
+    node per norm -- fullgraph, dynamic rows -- and the compiled function matches the eager route
+    bit for bit. Captured in a CUDA graph, a replay on new inputs written into the captured
+    buffers gives what an eager call on them gives: no host sync, nothing frozen at capture."""
+    _on_here("vllm_norm")
+    monkeypatch.setenv("VLLM_CACHE_ROOT", str(tmp_path))
+    monkeypatch.setenv("HK_VLLM_NORM", "compile")   # compiled calls are opt-in
+
+    class GemmaRMSNorm:
+        def __init__(self, weight):
+            self.weight, self.variance_epsilon = weight, 1e-6
+
+        def forward_native(self, x, residual=None):
+            raise AssertionError("vLLM's native path ran")
+
+        def forward_cuda(self, x, residual=None):
+            return self.forward_native(x, residual)
+
+    _stand_in(monkeypatch, vllm_norm._HOME, GemmaRMSNorm=GemmaRMSNorm)
+    g = torch.Generator(device="cuda").manual_seed(7)
+    w = (torch.randn(2048, device="cuda", generator=g) * 0.1).to(B)
+    a, b = GemmaRMSNorm(w), GemmaRMSNorm(w.flip(0).contiguous())
+
+    def block(x, r):                      # two norms, as a decoder layer: add+norm, then norm
+        y, h = a.forward_native(x, r)
+        return b.forward_native(y * 2.0), h
+
+    try:
+        assert "hk-norm" in vllm_norm.apply()
+        torch._dynamo.reset()
+        seen = []
+
+        def backend(gm, example_inputs):
+            seen.append(str(gm.graph))
+            return gm.forward
+
+        compiled = torch.compile(block, backend=backend, fullgraph=True, dynamic=True)
+        for m in (5, 64, 300):
+            x = torch.randn(m, 2048, device="cuda", dtype=B, generator=g)
+            r = torch.randn(m, 2048, device="cuda", dtype=B, generator=g)
+            want_y, want_h = block(x, r)
+            got_y, got_h = compiled(x, r)
+            assert torch.equal(got_y, want_y) and torch.equal(got_h, want_h)
+        graph = "\n".join(seen)
+        assert "hk_vllm.gemma_add_rms_norm" in graph and "hk_vllm.gemma_rms_norm" in graph
+        assert len(seen) == 1                # dynamic rows: one graph for every m
+
+        x = torch.randn(64, 2048, device="cuda", dtype=B, generator=g)
+        r = torch.randn(64, 2048, device="cuda", dtype=B, generator=g)
+        block(x, r)                          # warm: kernels built before capture
+        torch.cuda.synchronize()
+        cg = torch.cuda.CUDAGraph()
+        before = vllm_norm.ADD.captured["hk"]
+        with torch.cuda.graph(cg):
+            out_y, out_h = block(x, r)
+        assert vllm_norm.ADD.captured["hk"] == before + 1
+        for _ in range(3):
+            x.copy_(torch.randn(64, 2048, device="cuda", dtype=B, generator=g))
+            r.copy_(torch.randn(64, 2048, device="cuda", dtype=B, generator=g))
+            cg.replay()
+            want_y, want_h = block(x, r)
+            assert torch.equal(out_y, want_y) and torch.equal(out_h, want_h)
+    finally:
+        assert "norm -> vllm" in vllm_norm.revert()
 
 
 def test_sglang_norm_is_ordered_on_the_engines_stream(monkeypatch):
