@@ -130,10 +130,14 @@ vLLM rows: vLLM on ROCm 7.14 (TheRock), torch 2.13. SGLang-Diffusion rows: upstr
 | Qwen3.8-27B AWQ int4 (AMD Quark W4A16) (hk 0.9.16) | TPOT, 4 / 8 concurrent (ms) | 37.8 / 61.9 | 32.4 / 34.4 | 1.17x / 1.80x |
 | | TTFT 512 / 2k tokens (ms) | 333 / 1,401 | 274 / 1,122 | 1.22x / 1.25x |
 | Wan2.1-T2V-1.3B, 832x480x81, 20 steps (hk 0.9.14) | seconds per video | 283.6 (282.0-295.1) | 178.0 (177.4-190.0) | 1.59x |
-| Qwen-Image 2.1, 1024x1024, 30 steps (hk 0.9.14) | seconds per image | 27.4 (27.3-28.1) | 25.1 (25.0-25.1) | 1.09x |
+| Qwen-Image 2.1, 1024x1024, 30 steps (hk 0.9.20) | seconds per image | 29.1 (28.0-42.2) | 25.5 (24.4-69.9) | = (ranges overlap) |
 
 - **Single-request TPOT on R9700 is not quoted.** It is bimodal per engine build in both arms (about 29 ms or 37 ms,
   depending on the build, not on hk); within a state hk and stock are equal (1.00x).
+- **The Qwen-Image 2.1 row is a shared-box run.** Only the measured card was exclusive; the other cards ran other
+  users' jobs at about the same load in both arms (31% / 31%). Over 8 alternating rounds hk was faster in 6 (about 25 s
+  against 29 s an image), but one slow outlier in each arm (stock 42 s, hk 70 s) makes the round ranges overlap, so no
+  ratio is quoted. Single requests on this box swing from 25 to 55 s for stock and hk alike.
 - **One GPTQ round was discarded.** Another user's process ran inside its stock block; the row uses the other 5 of 6
   rounds.
 - **Quality.**
