@@ -620,7 +620,7 @@ def test_sgld_linear_takes_a_dit_projection_through_hk(monkeypatch):
         before = dict(sgld.LINEAR_STATS)
         _close(Unquantized().apply(_Layer(w), x), torch.nn.functional.linear(x, w))
         assert sgld.LINEAR_STATS["hk"] == before["hk"] + 1
-        small = torch.randn(16, 3072, device="cuda", dtype=B)   # below MIN_M: the engine's
+        small = torch.randn(32, 3072, device="cuda", dtype=B)   # past SMALL_M, below MIN_M: the engine's
         Unquantized().apply(_Layer(w), small)
         assert sgld.LINEAR_STATS["engine"] == before["engine"] + 1
         # a bias (Wan's projections): hk's GEMM with the bias in its store
@@ -630,6 +630,41 @@ def test_sgld_linear_takes_a_dit_projection_through_hk(monkeypatch):
         monkeypatch.setattr(sgld, "LINEAR_BIAS", False)              # biased: the engine's
         Unquantized().apply(_Layer(w), x, bias)
         assert sgld.LINEAR_STATS["engine"] == before["engine"] + 2
+    finally:
+        sgld.revert_linear()
+    assert Unquantized.apply is orig
+
+
+@pytest.mark.parametrize("rows", [1, 2])
+def test_sgld_linear_takes_a_modulation_projection_on_the_decode_gemm(monkeypatch, tmp_path, rows):
+    """A DiT's AdaLN / modulation projection, one row a sample, with a bias: hk's decode GEMM with the
+    bias in its store; error vs fp32 no worse than F.linear's."""
+    _on_here("sgld_linear")
+
+    class Unquantized:
+        def apply(self, layer, x, bias=None):
+            return torch.nn.functional.linear(x, layer.weight, bias)
+
+    _stand_in(monkeypatch, sgld.LINEAR_HOME, UnquantizedLinearMethod=Unquantized)
+    monkeypatch.setattr(sgld, "MARGIN", 0.0)         # take hk's GEMM whatever the timing says
+    monkeypatch.setattr(sgld, "DECISIONS", {})
+    monkeypatch.setattr(sgld, "decisions_file", lambda: tmp_path / "decisions.json")   # none pinned
+    orig = Unquantized.apply
+    g = torch.Generator(device="cuda").manual_seed(rows)
+    n, k = 18432, 3072                                # a modulation projection's size (6 x 3072)
+    w = torch.randn(n, k, device="cuda", dtype=B, generator=g) * k ** -0.5
+    bias = torch.randn(n, device="cuda", dtype=B, generator=g)
+    x = torch.randn(rows, 1, k, device="cuda", dtype=B, generator=g)
+    try:
+        sgld.apply_linear()
+        before, small = dict(sgld.LINEAR_STATS), sgld.SMALL_STATS["hk"]
+        for b in (bias, None):
+            got = Unquantized().apply(_Layer(w), x, b)
+            ref = torch.nn.functional.linear(x.float(), w.float(), None if b is None else b.float())
+            eng = torch.nn.functional.linear(x, w, b)
+            assert got.shape == eng.shape and got.dtype == B
+            assert (got.float() - ref).abs().max() <= (eng.float() - ref).abs().max() + 1e-6
+        assert sgld.LINEAR_STATS["hk"] == before["hk"] + 2 and sgld.SMALL_STATS["hk"] == small + 2
     finally:
         sgld.revert_linear()
     assert Unquantized.apply is orig

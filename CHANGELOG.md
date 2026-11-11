@@ -6,6 +6,10 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+- SGLang-Diffusion's linear route takes projections of up to 16 rows -- a DiT's AdaLN / modulation, one row a
+  sample -- on `hk.ops.decode_gemm` with the bias in its store, where each shape measures faster (decided and
+  pinned like the rest). MiniMax H3's AdaLN projection ([1-2, 2688] x [2688, 24192] + bias) 1.54-1.57x
+  `F.linear` on a W7900D; Wan2.1's time modulation 2.6-2.9x a call, its video unchanged in time and quality.
 **SGLang-Diffusion: the same seed gives the same image in every process.** `sgld_linear` decided hk vs `F.linear` per shape by timing in each process, so a near-tie shape could take different kernels in different processes (or TP ranks) and change the image slightly (seen in MiniMax H3-Image's edit). The decision is now pinned per GPU in hk's cache directory the first time a shape is seen, under a file lock.
 
 - vLLM's prefill route takes TRITON_ATTN caches past 4 GiB. HipKittens' RDNA `gl` formed a tile's element

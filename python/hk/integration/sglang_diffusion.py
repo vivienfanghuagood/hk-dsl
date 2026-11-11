@@ -297,9 +297,86 @@ def _gemm_bias_op(sched, m, n):
     return op
 
 
+#: Up to this many rows a projection may take hk's decode GEMM (hk.ops.decode_gemm: the weight read once,
+#: at near-streaming bandwidth) -- a DiT's AdaLN / modulation projections, one row a sample, when they are
+#: SGLang linear layers (MiniMax H3's adaln_proj, Wan's time modulation; Qwen-Image 2.1's are nn.Linear and
+#: never reach this route). H3's [1-2, 2688] x [2688, 24192] + bias: 1.54-1.57x F.linear on a W7900D,
+#: weights read from DRAM. Each shape still decides by timing, pinned (_decide).
+SMALL_M = 16
+
+SMALL_STATS = {"hk": 0}
+
+
+def _small_op(m, n, k, with_bias):
+    """hk's decode GEMM for (m, k) x (n, k)^T, the bias (if any) in its store (one rounding, as
+    hipBLASLt's bias epilogue), on torch's current stream: op(a, weight, out[, bias]). None where its
+    schedule does not take the shape (or would split K, which needs scratch operands)."""
+    import torch  # noqa: PLC0415
+
+    from ..ops import decode_gemm as dg  # noqa: PLC0415
+    from ..runtime.torch_ext import launcher  # noqa: PLC0415
+    from ..target import current_arch, get_target  # noqa: PLC0415
+    from ..templates.gemm import bias as bias_ep, bind  # noqa: PLC0415
+    from ..types import bf16  # noqa: PLC0415
+
+    if get_target(current_arch()).wave != 32 or n % 16:
+        return None
+    s = dg.schedule_for(m, k)
+    if s is None or s.get("splits", 1) != 1:
+        return None
+    name = (f"sgld_decode_t{s['tokens']}_s{s['slices']}_w{s['warps']}_c{s['combine_depth']}"
+            f"_r{s['resident']}" + (f"_o{s['occupancy']}" if s.get("occupancy") else "")
+            + ("_bias" if with_bias else ""))
+    op = _OPS.get(name)
+    if op is None:
+        ep = (bind(bias_ep, {"bias": torch.empty(n, dtype=torch.bfloat16, device="meta")}, m, n, bf16)
+              if with_bias else None)
+        op = _OPS[name] = launcher(dg.decode_gemm_kernel(name, epilogue=ep, **s), ns="hk_sgld")
+    return op
+
+
+def _hk_small(x, weight, bias):
+    """hk's decode GEMM for y = x @ weight.T (+ bias) at 1..SMALL_M rows, or None where the engine's
+    should run (as _hk_linear, below MIN_M)."""
+    import torch  # noqa: PLC0415
+
+    if (x.dtype != torch.bfloat16 or weight.dtype != torch.bfloat16 or not x.is_cuda
+            or weight.dim() != 2 or not weight.is_contiguous()):
+        return None
+    if bias is not None and (not LINEAR_BIAS or bias.dtype != torch.bfloat16 or bias.dim() != 1
+                             or bias.shape[0] != weight.shape[0]):
+        return None
+    k, n = x.shape[-1], weight.shape[0]
+    m = x.numel() // k if k else 0
+    if not 1 <= m <= SMALL_M or weight.shape[1] != k:
+        return None
+    a = x.reshape(m, k)
+    if not a.is_contiguous():
+        return None
+    op = _small_op(m, n, k, bias is not None)
+    if op is None:
+        return None
+    key = (_bucket(m), n, k, bias is not None)
+    if key not in DECISIONS:
+        _decide(key, lambda: _measure(op, a, weight, bias))
+        if os.environ.get("HK_SGLD_LOG", "0") not in _OFF:
+            print(f"[hk] sglang-diffusion linear {m}x{n}x{k}{' +bias' if bias is not None else ''} "
+                  f"(decode GEMM): {DECISIONS[key][1]}", flush=True)
+    if not DECISIONS[key][0]:
+        return None
+    out = torch.empty((m, n), device=x.device, dtype=torch.bfloat16)
+    if bias is None:
+        op(a, weight, out)
+    else:
+        op(a, weight, out, bias.contiguous())
+    SMALL_STATS["hk"] += 1
+    return out.view(*x.shape[:-1], n)
+
+
 def apply_linear() -> str:
-    """Route SGLang-Diffusion's unquantized projections (bf16, no bias, M >=
-    MIN_M) through hk's GEMM; every other call keeps the engine's. Idempotent."""
+    """Route SGLang-Diffusion's unquantized projections (bf16, M >= MIN_M, or up to SMALL_M rows on
+    the decode GEMM) through hk's GEMM where it measured faster; every other call keeps the
+    engine's. Idempotent."""
     import importlib  # noqa: PLC0415
 
     import torch  # noqa: PLC0415
@@ -314,6 +391,8 @@ def apply_linear() -> str:
         # compiler-disabled wrapper would break the graph at every projection.
         if not args and not kwargs and not torch.compiler.is_compiling():
             y = _hk_linear(x, layer.weight, bias)
+            if y is None:
+                y = _hk_small(x, layer.weight, bias)
             if y is not None:
                 LINEAR_STATS["hk"] += 1
                 return y
@@ -323,7 +402,8 @@ def apply_linear() -> str:
     apply._hk = True
     cls.apply = apply
     _LINEAR_ORIG[:] = [(cls, orig)]
-    return f"linear -> hk.ops.matmul at M >= {MIN_M} ({LINEAR_HOME}.UnquantizedLinearMethod.apply)"
+    return (f"linear -> hk.ops.matmul at M >= {MIN_M}, hk.ops.decode_gemm at M <= {SMALL_M} "
+            f"({LINEAR_HOME}.UnquantizedLinearMethod.apply)")
 
 
 #: The module of Wan's VAE, whose WanCausalConv3d every decoder conv3d goes through.
@@ -830,7 +910,8 @@ def stats() -> str:
             f"torch {s['fallback']}"
             + (f" ({fb})" if fb else "")
             + (f"; attn_k3 shapes {dict(list(sdpa.K3_SHAPES.items())[:4])}" if sdpa.K3_SHAPES else "")
-            + f"; linear: hk {LINEAR_STATS['hk']}, engine {LINEAR_STATS['engine']}"
+            + f"; linear: hk {LINEAR_STATS['hk']} ({SMALL_STATS['hk']} on the decode GEMM), "
+              f"engine {LINEAR_STATS['engine']}"
             + f"; convrot: hk {CONVROT_STATS['hk']}, fallback {CONVROT_STATS['fallback']}"
             + f"; vaeconv: conv2d {VAE_STATS['conv2d']}, chunked {VAE_STATS['chunked']}, "
               f"whole {VAE_STATS['whole']}"

@@ -82,7 +82,14 @@ default keeps the old boot, which needs `HK_SGLD=1`; run `install` again
   `F.linear` (hk must win by `MARGIN`, 3%), and the decision is pinned in
   hk's cache directory (`sgld_linear_<arch>_<gpu>.json` under `HK_CACHE_DIR`),
   so every later process and every TP rank takes the same kernel and the same
-  seed gives the same image; delete the file to decide again;
+  seed gives the same image; delete the file to decide again. Up to
+  `SMALL_M` (16) rows -- a DiT's AdaLN / modulation projections, one row a
+  sample -- a projection may take `hk.ops.decode_gemm`, which reads the
+  weight once at near-streaming bandwidth, with the bias in its store:
+  1.54-1.57x `F.linear` at MiniMax H3's AdaLN ([1-2, 2688] x
+  [2688, 24192]) on a W7900D, the same error; decided and pinned per shape
+  like the rest. (Only SGLang linear layers reach the route: Qwen-Image
+  2.1's modulation is `nn.Linear`.);
 - **vaeconv**: Wan's VAE conv3d (`WanCausalConv3d` of
   `sglang.multimodal_gen.runtime.models.vaes.wanvae`) as calls of 2 output
   frames, each the engine's own conv on a slice of the input. On gfx1100
