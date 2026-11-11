@@ -630,6 +630,17 @@ def test_sgld_linear_takes_a_dit_projection_through_hk(monkeypatch):
         monkeypatch.setattr(sgld, "LINEAR_BIAS", False)              # biased: the engine's
         Unquantized().apply(_Layer(w), x, bias)
         assert sgld.LINEAR_STATS["engine"] == before["engine"] + 2
+        # rows of a wider buffer (a DiT fc2 reading half of its gate / up buffer): taken as they
+        # are, the row stride passed to the GEMM; the other half must not leak into the result
+        buf = torch.randn(1, sgld.MIN_M, 2 * 3072, device="cuda", dtype=B)
+        for half in (buf[..., :3072], buf[..., 3072:]):
+            assert not half.is_contiguous()
+            _close(Unquantized().apply(_Layer(w), half),
+                   torch.nn.functional.linear(half.contiguous(), w))
+        assert sgld.LINEAR_STATS["hk"] == before["hk"] + 4
+        odd = buf[..., 1:3073]                                       # not 16-byte aligned
+        Unquantized().apply(_Layer(w), odd)
+        assert sgld.LINEAR_STATS["engine"] == before["engine"] + 3
     finally:
         sgld.revert_linear()
     assert Unquantized.apply is orig

@@ -12,6 +12,10 @@ The next version's notes collect here until it is released.
   F.linear it is (538 ms of conv3d -> 0.28 ms for 4096 patches). Both exact up to summation order; on by
   default once an end-to-end edit smoke is in.
 
+- SGLang-Diffusion's linear route takes an input that is rows of a wider buffer -- a DiT's fc2 reading the
+  activation half of its gate / up buffer -- as it is, passing the row stride to hk's GEMM; it had gone to
+  hipBLASLt. MiniMax H3's fc2 on a W7900D: 1.89x / 1.57x `F.linear` on the same view at 1072 / 3120 rows.
+
 **SGLang-Diffusion: the same seed gives the same image in every process.** `sgld_linear` decided hk vs `F.linear` per shape by timing in each process, so a near-tie shape could take different kernels in different processes (or TP ranks) and change the image slightly (seen in MiniMax H3-Image's edit). The decision is now pinned per GPU in hk's cache directory the first time a shape is seen, under a file lock.
 
 - vLLM's prefill route takes TRITON_ATTN caches past 4 GiB. HipKittens' RDNA `gl` formed a tile's element
