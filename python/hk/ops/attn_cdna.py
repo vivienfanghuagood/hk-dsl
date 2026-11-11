@@ -151,7 +151,7 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
                 lazy: float = 8.0, sched: bool = True, lpt: bool = True,
                 skip: bool = True, _nomask: bool = False, paged: bool = False,
                 mapping: str = "block_first", arch: Optional[str] = None,
-                pairs: bool = False, kv_split: bool = False):
+                pairs: bool = False, kv_split: bool = False, late_sc: bool = False):
     """`lazy`: the running max is taken as stale until a block's max exceeds
     it by more than this (log2 units), so P stays below 2^lazy and O is
     rescaled only when the max really moves (FlashAttention 4's threshold,
@@ -415,10 +415,16 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
             m_new.__isub__(m)               # the step up
             m_new.__imul__(grow)            # 0 unless the max moves
             m.__iadd__(m_new)
-            hk.math.mul(m_new, -1.0, into=sc)
-            sc.exp2_()                      # 1 unless the max moves
-            hk.arch.pin(m, sc, ell)
-            ell.__imul__(sc)
+            if late_sc:
+                # EXPERIMENT: exp2 of the step and l's update wait for the
+                # next math phase's branch, taken only when the max moved.
+                hk.math.mul(m_new, -1.0, into=sc)
+                hk.arch.pin(m, sc, ell)
+            else:
+                hk.math.mul(m_new, -1.0, into=sc)
+                sc.exp2_()                      # 1 unless the max moves
+                hk.arch.pin(m, sc, ell)
+                ell.__imul__(sc)
             S[bb].__isub__(m)
             Sh[bb][0].exp2_()
             hk.arch.pin(S[bb])
@@ -442,6 +448,9 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
 
         def rescale(grow):
             if grow > 0:
+                if late_sc:
+                    sc.exp2_()
+                    ell.__imul__(sc)
                 O.__imul__(hk.as_vec(sc, T_O))
 
         def end_phase():
