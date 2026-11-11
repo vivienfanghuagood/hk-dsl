@@ -386,6 +386,13 @@ def apply_h3vae() -> str:
 
     import torch.nn.functional as F  # noqa: PLC0415, N812
 
+    from ..target import current_arch, get_target  # noqa: PLC0415
+
+    arch = current_arch()
+    if get_target(arch).wave != 32:
+        # Measured on RDNA only. On gfx950 MIOpen's conv2d for these shapes has 1.6x the mean
+        # error of its conv3d (the GPU test's bound), so the engine's conv3d stays there.
+        return f"h3vae: not applied on {arch} (RDNA only: gfx1100, gfx1201)"
     cls = getattr(importlib.import_module(H3VAE_HOME), "BaseConv3d")
     if getattr(cls.forward, "_hk", False):
         return "h3vae: already patched"

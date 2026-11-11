@@ -917,8 +917,12 @@ class _H3Conv3d(torch.nn.Conv3d):
 
 
 def test_sgld_h3vae_runs_one_frame_as_a_conv2d_with_the_last_tap(monkeypatch):
-    """Not a hk kernel (MIOpen's conv2d for its conv3d), so it runs on every arch."""
+    """Not a hk kernel (MIOpen's conv2d for its conv3d); RDNA only: on gfx950 the conv2d's mean error
+    is 1.6x the conv3d's at these shapes, and the route leaves the engine's conv3d there."""
     _stand_in(monkeypatch, sgld.H3VAE_HOME, BaseConv3d=_H3Conv3d)
+    if get_target(current_arch()).wave != 32:
+        assert "not applied" in sgld.apply_h3vae() and not getattr(_H3Conv3d.forward, "_hk", False)
+        return
     orig = _H3Conv3d.forward
     g = torch.Generator(device="cuda").manual_seed(5)
     convs = [  # conv_in / resnet (reflect), the stride-2 downsample, a 1x1x1 shortcut

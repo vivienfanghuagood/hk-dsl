@@ -237,7 +237,8 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "MiniMax H3's VAE convs (BaseConv3d) on one frame -- an image edit's encoder -- as a conv2d "
        "with the last time tap: a causal zero-padded single frame touches no other tap",
        "exact up to summation order; 1.99-7.35x MIOpen's conv3d a conv at all 14 encoder shapes on "
-       "a W7900D, same error vs fp32. Off until the end-to-end smoke on H3-Image (an edit)",
+       "a W7900D, same error vs fp32. RDNA only (on gfx950 MIOpen's conv2d has 1.6x the conv3d's mean error "
+       "there). Off until the end-to-end smoke on H3-Image (an edit)",
        part="h3vae"),
     _R("sgld_patchembed", "sglang_diffusion", "HK_SGLD_PATCHEMBED", False, (),
        "Qwen3-VL's vision patch embedding (kernel == stride, as MiniMax H3's tower builds it) as "

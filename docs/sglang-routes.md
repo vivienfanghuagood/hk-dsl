@@ -136,7 +136,8 @@ steer the work to a cheaper exact form:
   its conv3d's im2col. 1.99-7.35x a conv at the encoder's 14 shapes on a
   W7900D (128 channels at 258^2 to 1024 at 18^2), about 2.2 s -> 0.6 s an
   edit. More frames, replicate time padding or a pre-padded input keep the
-  engine's.
+  engine's. RDNA only: on gfx950 MIOpen's conv2d at these shapes has 1.6x
+  the mean error of its conv3d, so the route leaves the engine's there.
 - **patchembed**: Qwen3-VL's vision patch embedding
   (`Qwen3VLVisionPatchEmbed` of `sglang.srt.models.qwen3_vl`), whose conv3d has
   kernel == stride over each whole (C, T, P, P) patch, as the one F.linear it
