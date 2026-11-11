@@ -11,6 +11,9 @@ The next version's notes collect here until it is released.
   time tap, 1.99-7.35x MIOpen's conv3d a conv on a W7900D; Qwen3-VL's vision patch embedding runs as the one
   F.linear it is (538 ms of conv3d -> 0.28 ms for 4096 patches). Both exact up to summation order; on by
   default once an end-to-end edit smoke is in.
+
+**SGLang-Diffusion: the same seed gives the same image in every process.** `sgld_linear` decided hk vs `F.linear` per shape by timing in each process, so a near-tie shape could take different kernels in different processes (or TP ranks) and change the image slightly (seen in MiniMax H3-Image's edit). The decision is now pinned per GPU in hk's cache directory the first time a shape is seen, under a file lock.
+
 - vLLM's prefill route takes TRITON_ATTN caches past 4 GiB. HipKittens' RDNA `gl` formed a tile's element
   index in 32 bits, which wrapped at 2^31 elements, so such a cache was declined; now it is 64-bit
   (HipKittens #6). On a hybrid model -- MiniCPM-V-4.7, the Qwen3.5 family, whose attention layers share one

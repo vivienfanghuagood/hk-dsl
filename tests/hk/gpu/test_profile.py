@@ -49,8 +49,10 @@ def test_a_kernel_is_timed_counted_and_judged(strip_profile):
     assert k["verdict"]["line"]
     assert p.sources["timing"].startswith("rocprofv3")
     if p.sources["counters"].startswith("rocprofv3"):
-        # The counters ran: the waves are the grid's, the bytes the tensors'.
-        assert k["counters"]["SQ_WAVES"] == k["grid"]["workgroups"] * k["grid"][
+        # The counters ran: at least the grid's waves, and the tensors' bytes. At least, not
+        # exactly: on a GPU shared with other processes (the gfx1201 CI box), SQ_WAVES also
+        # counts their waves in the sample window (seen 2x and 13x the grid on 11-10/11).
+        assert k["counters"]["SQ_WAVES"] >= k["grid"]["workgroups"] * k["grid"][
             "waves_per_workgroup"]
         assert k["roofline"]["bytes"] > 0
     else:

@@ -82,3 +82,32 @@ def test_the_qknorm_contract_reads_both_forms_of_the_fallback(src, ok):
     from hk.integration import contract
 
     assert contract.norm_then_rope(src) is ok
+
+
+def test_a_linear_decision_is_pinned_so_a_near_tie_cannot_flip_between_processes(tmp_path, monkeypatch):
+    from hk.integration import sglang_diffusion as sd
+
+    f = tmp_path / "sgld_linear_gfx1100_w7900d.json"
+    monkeypatch.setattr(sd, "decisions_file", lambda: f)
+    monkeypatch.setattr(sd, "DECISIONS", {})
+    key = (2048, 256, 5120, False)
+    timed = []
+    assert sd._decide(key, lambda: timed.append(1) or (True, "hk (1.03x)"))[0] is True
+    # a second process: its own timing of the near-tie would say "engine" -- the pin wins, untimed
+    monkeypatch.setattr(sd, "DECISIONS", {})
+    got = sd._decide(key, lambda: timed.append(2) or (False, "engine (1.02x)"))
+    assert got[0] is True and "pinned" in got[1] and timed == [1]
+    # another shape is decided (and pinned) on its own
+    assert sd._decide((4096, 4096, 4096, True), lambda: (False, "engine"))[0] is False
+    assert sorted(__import__("json").loads(f.read_text())) == ["2048,256,5120,0", "4096,4096,4096,1"]
+
+
+def test_a_torn_decisions_file_is_decided_again(tmp_path, monkeypatch):
+    from hk.integration import sglang_diffusion as sd
+
+    f = tmp_path / "d.json"
+    f.write_text("{not json")
+    monkeypatch.setattr(sd, "decisions_file", lambda: f)
+    monkeypatch.setattr(sd, "DECISIONS", {})
+    assert sd._decide((1024, 64, 64, False), lambda: (True, "hk"))[0] is True
+    assert "1024,64,64,0" in __import__("json").loads(f.read_text())
