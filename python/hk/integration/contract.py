@@ -573,8 +573,14 @@ def gather_sgld_rope() -> dict:
 
     from . import sglang_diffusion as sd  # noqa: PLC0415
 
-    fn = importlib.import_module(sd.QWEN21_HOME).apply_rope
+    mod = importlib.import_module(sd.QWEN21_HOME)
+    fn = mod.apply_rope
     src = inspect.getsource(fn)
+    # SGLang since 2026-11 keeps the eager math in _eager_rope, which apply_rope returns off CUDA
+    # (ROCm); its fused CUDA kernel is the same multiply.
+    eager = getattr(mod, "_eager_rope", None)
+    if eager is not None and "return _eager_rope(x, rope)" in src:
+        src += inspect.getsource(eager)
     return {"apply_rope": names(fn),
             # the computation rotary_pairs reproduces
             "complex_multiply": "view_as_complex(x.float()" in src and "rope[None, :, None]" in src}
