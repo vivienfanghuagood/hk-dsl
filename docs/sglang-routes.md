@@ -74,15 +74,14 @@ default keeps the old boot, which needs `HK_SGLD=1`; run `install` again
   only one that runs on RDNA3); masked and odd-head-dim calls go to torch;
 - **linear**: `UnquantizedLinearMethod.apply` of
   `sglang.multimodal_gen.runtime.layers.linear` to hk's GEMM for bf16
-  projections with at least `MIN_M` (1024) rows. A bias (Wan's projections
+  projections with at least `MIN_M` (1024) rows, contiguous or rows of a
+  wider buffer passed with their row stride (a DiT's fc2 reading the
+  activation half of its gate / up buffer: MiniMax H3's, 1.57-1.89x
+  `F.linear` on the same view on a W7900D). A bias (Wan's projections
   have one) is added in the GEMM's store, `hk.templates.gemm`'s bias
   epilogue, as hipBLASLt does: 1.22-1.26x `F.linear` at Wan2.1's shapes,
   1.047x a Wan2.1 832x480x81 video. `LINEAR_BIAS = False` leaves biased
-  projections to the engine. An input that is rows of a wider buffer (a
-  DiT's fc2 reading the activation half of its gate / up buffer) goes to
-  the GEMM as it is, with its row stride: MiniMax H3's fc2
-  ([M, 3584] x [3584, 5376], row stride 7168) 1.57-1.89x `F.linear` on the
-  same view on a W7900D;
+  projections to the engine;
 - **vaeconv**: Wan's VAE conv3d (`WanCausalConv3d` of
   `sglang.multimodal_gen.runtime.models.vaes.wanvae`) as calls of 2 output
   frames, each the engine's own conv on a slice of the input. On gfx1100
