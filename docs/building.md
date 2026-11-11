@@ -36,6 +36,11 @@ scripts/build_hk_mlir.sh    # the dialect, passes, translation and hk._mlir (~1 
 scripts/build_wheel.sh      # optional: a wheel for this interpreter, headers included
 ```
 
+On Ubuntu 22.04 with Python 3.10, CI's prebuilt MLIR replaces `build_mlir.sh`. It is the
+`mlir-23.1.3-install-cp310-ubuntu22.04-x86_64.tar.zst` asset of the `ci-mlir-23.1.3` release (889 MB).
+Unpack it into `/opt/hk-llvm` and build the dialect with `HK_LLVM_ROOT=/opt/hk-llvm` (the commands are in
+[CONTRIBUTING](https://github.com/vivienfanghuagood/hk-dsl/blob/main/CONTRIBUTING.md#your-first-contribution)).
+
 `build_mlir.sh` takes `LLVM_TAG`, `PYTHON`, `HK_LLVM_ROOT`, `JOBS` and
 `LINK_JOBS`; keep `JOBS` × ~2 GB under the memory limit (48 GiB of memory takes
 `JOBS=6 LINK_JOBS=1`). The bindings land in `python/hk/_mlir`, about 36 MB.
