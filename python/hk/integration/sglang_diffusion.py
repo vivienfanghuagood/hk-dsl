@@ -129,6 +129,17 @@ LINEAR_STATS = {"hk": 0, "engine": 0}
 LINEAR_BIAS = True
 
 
+def _rows_of(a) -> bool:
+    """A as hk's GEMM takes it: contiguous, or rows of a wider buffer -- a slice of its last axis,
+    16-byte aligned (a DiT's fc2 reads the activation half of its gate / up buffer this way; the
+    launcher passes the row stride). Anything else keeps the engine's GEMM."""
+    if a.is_contiguous():
+        return True
+    rs = a.stride(0)
+    return (a.stride(1) == 1 and rs >= a.shape[1] and rs % 8 == 0
+            and a.data_ptr() % 16 == 0)
+
+
 def _hk_linear(x, weight, bias):
     """hk's GEMM for y = x @ weight.T (+ bias), or None where the engine's should run. A bias
     is added to the fp32 accumulator in the GEMM's store (hk.templates.gemm's bias epilogue),
@@ -149,7 +160,7 @@ def _hk_linear(x, weight, bias):
     if m < MIN_M or weight.shape[1] != k:
         return None
     a = x.reshape(m, k)
-    if not a.is_contiguous():
+    if not _rows_of(a):
         return None
     s = gemm.schedule_for(m, n, k)
     if k % s["k_step"] or n % s["block_n"]:

@@ -6,6 +6,9 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+- SGLang-Diffusion's linear route takes an input that is rows of a wider buffer -- a DiT's fc2 reading the
+  activation half of its gate / up buffer -- as it is, passing the row stride to hk's GEMM; it had gone to
+  hipBLASLt. MiniMax H3's fc2 on a W7900D: 1.89x / 1.57x `F.linear` on the same view at 1072 / 3120 rows.
 - vLLM's prefill route takes TRITON_ATTN caches past 4 GiB. HipKittens' RDNA `gl` formed a tile's element
   index in 32 bits, which wrapped at 2^31 elements, so such a cache was declined; now it is 64-bit
   (HipKittens #6). On a hybrid model -- MiniCPM-V-4.7, the Qwen3.5 family, whose attention layers share one
