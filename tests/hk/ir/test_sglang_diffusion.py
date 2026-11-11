@@ -82,4 +82,3 @@ def test_the_qknorm_contract_reads_both_forms_of_the_fallback(src, ok):
     from hk.integration import contract
 
     assert contract.norm_then_rope(src) is ok
-
