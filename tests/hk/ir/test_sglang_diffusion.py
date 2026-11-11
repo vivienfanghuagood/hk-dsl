@@ -30,7 +30,8 @@ def _env(tmp_path, env_set):
     sgld.install(site)
     env = dict(os.environ, PYTHONPATH=f"{tmp_path / 'pkgs'}{os.pathsep}{REPO / 'python'}")
     for k in ("HK_SGLD", "HK_DISABLE", "HK_SGLD_ATTN", "HK_SGLD_LINEAR", "HK_SGLD_CONVROT",
-              "HK_SGLD_VAECONV", "HK_SGLD_ROPE", "HK_SGLD_QKNORM", "HK_SGLD_DITNORM"):
+              "HK_SGLD_VAECONV", "HK_SGLD_ROPE", "HK_SGLD_QKNORM", "HK_SGLD_DITNORM",
+              "HK_SGLD_H3VAE", "HK_SGLD_PATCHEMBED"):
         env.pop(k, None)
     env["HK_ARCH"] = "gfx1100"
     env.update(env_set)

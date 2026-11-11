@@ -302,6 +302,17 @@
     "scale"
    ]
   },
+  "sgld_h3vae": {
+   "conv": true,
+   "conv3d": true,
+   "forward": [
+    "self",
+    "x"
+   ],
+   "one_frame_causal_zeros": true,
+   "sets": true,
+   "spatial_pad": true
+  },
   "sgld_linear": {
    "apply": [
     "self",
@@ -309,6 +320,15 @@
     "x",
     "bias"
    ]
+  },
+  "sgld_patchembed": {
+   "forward": [
+    "self",
+    "hidden_states"
+   ],
+   "kernel_is_stride": true,
+   "patch_order": true,
+   "sets": true
   },
   "sgld_qknorm": {
    "_error": "ModuleNotFoundError: No module named 'sglang.multimodal_gen.runtime.models.dits.qwen_image21'"
