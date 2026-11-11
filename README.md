@@ -27,7 +27,8 @@ pip install hk-dsl && python3 -m sglang.launch_server --model-path Qwen/Qwen3-8B
 ```
 
 The server's log then has a `[hk] vLLM routes on: ...` (or `[hk] SGLang routes
-on: ...`) line per process. `HK_DISABLE=1` gives you the stock engine back.
+on: ...`) line per process. `HK_DISABLE=1` gives you the stock engine back, which is how you
+see the difference on your own model ([how](docs/vllm.md#see-the-difference-on-your-model)).
 No vLLM yet? On an R9700 one `docker run` does both: [hk in vLLM](docs/vllm.md#enable-hk-in-one-command). Each engine's page has the
 GPUs and models, how to check it worked, and troubleshooting:
 **[hk in vLLM](docs/vllm.md)** · **[hk in SGLang](docs/sglang.md)**.
