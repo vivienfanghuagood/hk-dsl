@@ -23,9 +23,11 @@
   "sgld_ditnorm": {
    "_error": "ModuleNotFoundError: No module named 'sglang'"
   },
+  "sgld_h3vae": null,
   "sgld_linear": {
    "_error": "ModuleNotFoundError: No module named 'sglang'"
   },
+  "sgld_patchembed": null,
   "sgld_qknorm": {
    "_error": "ModuleNotFoundError: No module named 'sglang'"
   },

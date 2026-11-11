@@ -882,3 +882,120 @@ def test_sgld_ditnorm_takes_a_dit_blocks_norms_through_hk(monkeypatch):
     finally:
         sgld.revert_ditnorm()
     assert _ScaleResidualNormScaleShift.forward_native is orig
+
+
+# ---------------------------------------------------------------- MiniMax H3's image edit
+
+class _H3Conv3d(torch.nn.Conv3d):
+    """MiniMax H3's VAE BaseConv3d as SGLang writes it: spatial padding in pad_mode, then causal
+    time padding (one frame: kt - 1 zero frames in front, or the frame repeated), then a conv3d."""
+
+    def __init__(self, cin, cout, k, stride=1, padding=0, padding_mode="zeros", padding_mode_t=None,
+                 causal=True):
+        super().__init__(cin, cout, k, stride=stride, padding=padding, padding_mode=padding_mode)
+        self.pad_mode = "constant" if padding_mode == "zeros" else padding_mode
+        self.pad_mode_t = padding_mode_t or ("constant" if causal else "replicate")
+        self.causal = causal
+
+    def _apply_padding(self, x):
+        F = torch.nn.functional
+        x = F.pad(x, (self.padding[2], self.padding[2], self.padding[1], self.padding[1], 0, 0),
+                  mode=self.pad_mode)
+        if x.shape[2] > 1:
+            return F.pad(x, (0, 0, 0, 0, self.padding[0] * 2, 0), mode=self.pad_mode_t)
+        if self.pad_mode_t == "constant":
+            return F.pad(x, (0, 0, 0, 0, self.kernel_size[0] - 1, 0), mode="constant")
+        return x.expand(-1, -1, self.kernel_size[0], -1, -1)
+
+    def forward(self, x, *, pre_padded=False):
+        if sum(self.padding) == 0:
+            return super().forward(x)
+        if not pre_padded:
+            x = self._apply_padding(x)
+        return torch.nn.functional.conv3d(x, self.weight, self.bias, stride=self.stride, padding=0,
+                                          dilation=self.dilation)
+
+
+def test_sgld_h3vae_runs_one_frame_as_a_conv2d_with_the_last_tap(monkeypatch):
+    """Not a hk kernel (MIOpen's conv2d for its conv3d), so it runs on every arch."""
+    _stand_in(monkeypatch, sgld.H3VAE_HOME, BaseConv3d=_H3Conv3d)
+    orig = _H3Conv3d.forward
+    g = torch.Generator(device="cuda").manual_seed(5)
+    convs = [  # conv_in / resnet (reflect), the stride-2 downsample, a 1x1x1 shortcut
+        (_H3Conv3d(32, 64, 3, padding=1, padding_mode="reflect"), (1, 32, 1, 34, 18)),
+        (_H3Conv3d(64, 64, 3, stride=(1, 2, 2), padding=(1, 0, 0)), (1, 64, 1, 33, 17)),
+        (_H3Conv3d(64, 32, 1), (2, 64, 1, 16, 8)),
+        (_H3Conv3d(32, 32, 3, padding=1), (1, 32, 1, 16, 8)),
+    ]
+    try:
+        assert "last time tap" in sgld.apply_h3vae()
+        before = dict(sgld.H3VAE_STATS)
+        with torch.inference_mode():
+            for conv, shape in convs:
+                conv = conv.to("cuda", B)
+                x = torch.randn(*shape, device="cuda", dtype=B, generator=g)
+                got = conv(x)
+                want = orig(conv, x)                    # the engine's conv3d
+                ref = orig(conv.float(), x.float())     # and in fp32
+                conv.to(B)
+                assert got.shape == want.shape and got.dtype == want.dtype
+                _close(got, ref, tol=1e-2)
+                assert (got.float() - ref).abs().mean() <= 1.5 * (want.float() - ref).abs().mean()
+            assert sgld.H3VAE_STATS["conv2d"] == before["conv2d"] + len(convs)
+            # more than one frame, replicate time padding, pre-padded: the engine's
+            conv = convs[3][0]
+            x = torch.randn(1, 32, 3, 16, 8, device="cuda", dtype=B, generator=g)
+            _close(conv(x), orig(conv, x), tol=0)
+            rep = _H3Conv3d(32, 32, 3, padding=1, causal=False).to("cuda", B)
+            x1 = x[:, :, :1].contiguous()
+            _close(rep(x1), orig(rep, x1), tol=0)
+            xp = torch.nn.functional.pad(x, (1, 1, 1, 1))
+            _close(conv(xp, pre_padded=True), orig(conv, xp, pre_padded=True), tol=0)
+            assert sgld.H3VAE_STATS["engine"] == before["engine"] + 3
+    finally:
+        sgld.revert_h3vae()
+    assert _H3Conv3d.forward is orig
+
+
+class _Conv3dLayer(torch.nn.Conv3d):
+    enable_linear = False       # MiniMax H3's tower: disable_linear=True
+
+
+class Qwen3VLVisionPatchEmbed(torch.nn.Module):
+    """SGLang's, as MiniMax H3's vision tower builds it."""
+
+    def __init__(self, c=3, t=2, p=16, e=1152):
+        super().__init__()
+        self.patch_size, self.temporal_patch_size, self.in_channels, self.embed_dim = p, t, c, e
+        k = [t, p, p]
+        self.proj = _Conv3dLayer(c, e, kernel_size=k, stride=k, bias=True)
+
+    def forward(self, hidden_states):
+        hidden_states = hidden_states.view(-1, self.in_channels, self.temporal_patch_size,
+                                           self.patch_size, self.patch_size)
+        return self.proj(hidden_states.to(dtype=self.proj.weight.dtype)).view(-1, self.embed_dim)
+
+
+def test_sgld_patchembed_is_the_conv3d_as_one_linear(monkeypatch):
+    _stand_in(monkeypatch, sgld.PATCHEMBED_HOME, Qwen3VLVisionPatchEmbed=Qwen3VLVisionPatchEmbed)
+    orig = Qwen3VLVisionPatchEmbed.forward
+    g = torch.Generator(device="cuda").manual_seed(6)
+    pe = Qwen3VLVisionPatchEmbed().to("cuda", B)
+    x = torch.randn(1024, 3 * 2 * 16 * 16, device="cuda", dtype=torch.float32, generator=g)
+    try:
+        assert "one F.linear" in sgld.apply_patchembed()
+        before = dict(sgld.PATCHEMBED_STATS)
+        with torch.inference_mode():
+            got, want = pe(x), orig(pe, x)
+            ref = orig(pe.float(), x)
+            pe.to(B)
+            assert got.shape == want.shape == (1024, 1152) and got.dtype == want.dtype == B
+            _close(got, ref, tol=1e-2)
+            assert (got.float() - ref).abs().mean() <= 1.5 * (want.float() - ref).abs().mean()
+            assert sgld.PATCHEMBED_STATS["linear"] == before["linear"] + 1
+            pe.proj.enable_linear = True                # SGLang's own linear path: the engine's
+            pe(x)
+            assert sgld.PATCHEMBED_STATS["engine"] == before["engine"] + 1
+    finally:
+        sgld.revert_patchembed()
+    assert Qwen3VLVisionPatchEmbed.forward is orig

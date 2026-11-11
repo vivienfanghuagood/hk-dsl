@@ -233,6 +233,17 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "outputs in stock's dtypes, mean error vs fp64 equal to stock's; Wan2.1-T2V-1.3B 832x480x81 "
        "20 steps: 201.9 -> 194.2 s a video (1.040x, same process, ABBA x2), inside stock's "
        "run-to-run spread", part="ditnorm"),
+    _R("sgld_h3vae", "sglang_diffusion", "HK_SGLD_H3VAE", False, (),
+       "MiniMax H3's VAE convs (BaseConv3d) on one frame -- an image edit's encoder -- as a conv2d "
+       "with the last time tap: a causal zero-padded single frame touches no other tap",
+       "exact up to summation order; 1.99-7.35x MIOpen's conv3d a conv at all 14 encoder shapes on "
+       "a W7900D, same error vs fp32. Off until the end-to-end smoke on H3-Image (an edit)",
+       part="h3vae"),
+    _R("sgld_patchembed", "sglang_diffusion", "HK_SGLD_PATCHEMBED", False, (),
+       "Qwen3-VL's vision patch embedding (kernel == stride, as MiniMax H3's tower builds it) as "
+       "the one F.linear it is, where SGLang would run a conv3d",
+       "exact up to summation order; 4096 patches on a W7900D: MIOpen's conv3d 538 ms -> F.linear "
+       "0.28 ms. Off until the end-to-end smoke on H3-Image (an edit)", part="patchembed"),
     _R("sdpa_k3", "ops", "HK_SDPA_K3", True, ("gfx1100",),
        "hk.ops.sdpa's non-causal head_dim-128 calls on its newer kernel (hk.ops.attn_k3)",
        "per-call error 2.95e-5 vs the current path's 4.50e-5 at Qwen-Image's shape (#24)"),

@@ -352,6 +352,133 @@ def revert_vaeconv() -> str:
     return "vaeconv -> engine"
 
 
+#: MiniMax H3's VAE, whose BaseConv3d (an nn.Conv3d that pads itself) every encoder conv is.
+H3VAE_HOME = "sglang.multimodal_gen.runtime.models.vaes.minimax_h3_video_vae.conv"
+
+H3VAE_STATS = {"conv2d": 0, "engine": 0}
+
+
+def _h3vae_fits(conv, x, kw) -> bool:
+    """One input frame whose time padding is causal zeros (or no time tap to pad): the conv3d
+    sees the frame behind kt - 1 zero frames and gives one output frame, which only the last
+    time tap touches."""
+    import torch  # noqa: PLC0415
+
+    kt = conv.kernel_size[0]
+    return (not kw.get("pre_padded", False) and isinstance(x, torch.Tensor) and x.dim() == 5
+            and x.shape[2] == 1 and conv.groups == 1 and conv.dilation[0] == 1
+            # padding 0 is a plain conv3d: one frame fits only a kernel one frame deep
+            and (kt == 1 or (sum(conv.padding) > 0 and conv.causal
+                             and conv.pad_mode_t == "constant"))
+            and not torch.compiler.is_compiling())
+
+
+def apply_h3vae() -> str:
+    """MiniMax H3's VAE convs on a single frame -- every encoder conv of an image edit's
+    reference image -- as a conv2d with the conv's last time tap. BaseConv3d pads a one-frame
+    input with kt - 1 zero frames in front (causal, pad_mode_t "constant"), so the conv3d's one
+    output frame is the conv2d of the frame with weight[:, :, -1]: exact up to summation order,
+    kt x fewer FLOPs, and MIOpen's conv2d instead of its conv3d's im2col (1.99-7.35x a conv at
+    the encoder's shapes on a W7900D). Spatial padding as BaseConv3d does it, its mode included.
+    Anything else (more frames, replicate time padding, pre_padded) keeps the engine's.
+    Idempotent."""
+    import importlib  # noqa: PLC0415
+
+    import torch.nn.functional as F  # noqa: PLC0415, N812
+
+    cls = getattr(importlib.import_module(H3VAE_HOME), "BaseConv3d")
+    if getattr(cls.forward, "_hk", False):
+        return "h3vae: already patched"
+    orig = cls.forward
+
+    def forward(self, x, *args, **kw):
+        if not args and _h3vae_fits(self, x, kw):
+            H3VAE_STATS["conv2d"] += 1
+            x2 = x[:, :, 0]
+            p1, p2 = self.padding[1], self.padding[2]
+            if p1 or p2:
+                x2 = F.pad(x2, (p2, p2, p1, p1), mode=self.pad_mode)
+            return F.conv2d(x2, self.weight[:, :, -1], self.bias, stride=self.stride[1:],
+                            dilation=self.dilation[1:]).unsqueeze(2)
+        H3VAE_STATS["engine"] += 1
+        return orig(self, x, *args, **kw)
+
+    forward._hk = True
+    cls.forward = forward
+    _H3VAE_ORIG[:] = [(cls, orig)]
+    return f"h3vae: {H3VAE_HOME}.BaseConv3d on one frame -> conv2d with the last time tap"
+
+
+_H3VAE_ORIG = []
+
+
+def revert_h3vae() -> str:
+    if not _H3VAE_ORIG:
+        return "h3vae: not patched"
+    cls, orig = _H3VAE_ORIG.pop()
+    cls.forward = orig
+    return "h3vae -> engine"
+
+
+#: SGLang's Qwen3-VL vision tower, whose patch embedding MiniMax H3's text encoder builds with
+#: disable_linear=True (a conv3d with kernel == stride on every patch).
+PATCHEMBED_HOME = "sglang.srt.models.qwen3_vl"
+
+PATCHEMBED_STATS = {"linear": 0, "engine": 0}
+
+
+def _patchembed_fits(mod) -> bool:
+    p = mod.proj
+    k = tuple(p.kernel_size)
+    return (not getattr(p, "enable_linear", False) and k == tuple(p.stride)
+            and k == (mod.temporal_patch_size, mod.patch_size, mod.patch_size)
+            and tuple(p.padding) == (0, 0, 0) and tuple(p.dilation) == (1, 1, 1)
+            and p.groups == 1 and p.weight.shape[1] == mod.in_channels)
+
+
+def apply_patchembed() -> str:
+    """Qwen3-VL's vision patch embedding as the one GEMM it is: a conv3d whose kernel is its
+    stride and covers each whole patch is x.view(patches, C*T*P*P) @ w.view(E, C*T*P*P).T + b --
+    SGLang's own Conv3dLayer._forward_mulmat, which MiniMax H3's tower turns off
+    (disable_linear=True), leaving MIOpen 8,193 conv3d calls a 4096-patch image (538 ms ->
+    0.28 ms on a W7900D). Exact up to summation order. Idempotent."""
+    import importlib  # noqa: PLC0415
+
+    import torch.nn.functional as F  # noqa: PLC0415, N812
+
+    cls = getattr(importlib.import_module(PATCHEMBED_HOME), "Qwen3VLVisionPatchEmbed", None)
+    if cls is None:     # an SGLang without Qwen3-VL's vision tower: nothing to route
+        return f"patchembed: not available (no {PATCHEMBED_HOME}.Qwen3VLVisionPatchEmbed)"
+    if getattr(cls.forward, "_hk", False):
+        return "patchembed: already patched"
+    orig = cls.forward
+
+    def forward(self, hidden_states):
+        if _patchembed_fits(self):
+            PATCHEMBED_STATS["linear"] += 1
+            w = self.proj.weight
+            x = hidden_states.view(-1, w[0].numel()).to(dtype=w.dtype)
+            return F.linear(x, w.reshape(w.shape[0], -1), self.proj.bias).view(-1, self.embed_dim)
+        PATCHEMBED_STATS["engine"] += 1
+        return orig(self, hidden_states)
+
+    forward._hk = True
+    cls.forward = forward
+    _PATCHEMBED_ORIG[:] = [(cls, orig)]
+    return f"patchembed: {PATCHEMBED_HOME}.Qwen3VLVisionPatchEmbed -> one F.linear"
+
+
+_PATCHEMBED_ORIG = []
+
+
+def revert_patchembed() -> str:
+    if not _PATCHEMBED_ORIG:
+        return "patchembed: not patched"
+    cls, orig = _PATCHEMBED_ORIG.pop()
+    cls.forward = orig
+    return "patchembed -> engine"
+
+
 #: Qwen-Image 2.1's DiT module, whose `apply_rope` turns every image and text q and k.
 QWEN21_HOME = "sglang.multimodal_gen.runtime.models.dits.qwen_image21"
 
@@ -733,6 +860,15 @@ def apply() -> str:
         except ImportError as e:   # an SGLang without convrot_int8
             return f"convrot: not available ({e})"
 
+    def absent(route, home):
+        def run() -> str:
+            from .contract import _module_or_none  # noqa: PLC0415
+
+            if _module_or_none(home) is None:   # an SGLang without it: nothing to route
+                return f"{route}: not available (no {home})"
+            return {"h3vae": apply_h3vae, "patchembed": apply_patchembed}[route]()
+        return run
+
     # Each route's contract, then each route that holds, one at a time: a broken or raising
     # route is off with its own warning line, and the others are applied (contract.py).
     notes, applied, off = contract.apply_routes(
@@ -740,7 +876,8 @@ def apply() -> str:
         [("sgld_attn", attn), ("sgld_linear", apply_linear), ("sgld_convrot", convrot),
          ("sgld_vaeconv", apply_vaeconv), ("sgld_rope", apply_rope),
          ("sgld_qknorm", apply_qknorm),
-         ("sgld_ditnorm", apply_ditnorm)])
+         ("sgld_ditnorm", apply_ditnorm), ("sgld_h3vae", absent("h3vae", H3VAE_HOME)),
+         ("sgld_patchembed", absent("patchembed", PATCHEMBED_HOME))])
     if not applied:
         return f"no route applied ({', '.join(off)} off, see the warnings): stock"
     from ..runtime.compile import arm_jit_notice  # noqa: PLC0415
@@ -794,6 +931,8 @@ def stats() -> str:
               f"whole {VAE_STATS['whole']}"
             + f"; rope: hk {ROPE_STATS['hk']}, engine {ROPE_STATS['engine']}"
             + f"; qknorm: hk {QKNORM_STATS['hk']}, engine {QKNORM_STATS['engine']}"
+            + f"; h3vae: conv2d {H3VAE_STATS['conv2d']}, engine {H3VAE_STATS['engine']}"
+            + f"; patchembed: linear {PATCHEMBED_STATS['linear']}, engine {PATCHEMBED_STATS['engine']}"
             + f"; ditnorm: hk {DITNORM_STATS['hk']}, engine {DITNORM_STATS['engine']}"
             + (f" ({'; '.join(f'{k}: {v}' for k, v in list(DITNORM_FALLBACKS.items())[:3])})"
                if DITNORM_FALLBACKS else ""))

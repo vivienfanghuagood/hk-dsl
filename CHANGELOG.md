@@ -6,6 +6,11 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+- SGLang-Diffusion, opt-in (`HK_SGLD_H3VAE=1`, `HK_SGLD_PATCHEMBED=1`): MiniMax H3's image edit. The VAE
+  encoder's convs on the reference image (one frame behind causal zero padding) run as a conv2d with the last
+  time tap, 1.99-7.35x MIOpen's conv3d a conv on a W7900D; Qwen3-VL's vision patch embedding runs as the one
+  F.linear it is (538 ms of conv3d -> 0.28 ms for 4096 patches). Both exact up to summation order; on by
+  default once an end-to-end edit smoke is in.
 - vLLM's prefill route takes TRITON_ATTN caches past 4 GiB. HipKittens' RDNA `gl` formed a tile's element
   index in 32 bits, which wrapped at 2^31 elements, so such a cache was declined; now it is 64-bit
   (HipKittens #6). On a hybrid model -- MiniCPM-V-4.7, the Qwen3.5 family, whose attention layers share one
