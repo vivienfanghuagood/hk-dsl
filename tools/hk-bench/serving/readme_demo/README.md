@@ -1,5 +1,9 @@
 # The README's demo GIF
 
+> **Not on the repository README for now (scorecard audit, 2026-11-11).** The recording's stock runs eager
+> (`enforce_eager`, MiniCPM-V-4.7's production setting), and stock with CUDA graphs is faster, so the GIF does not
+> compare hk with stock at its best. Re-record it against stock in graphs mode before putting it back.
+
 The GIF at the top of the repository's README shows one request served by stock vLLM and by vLLM with hk-dsl,
 on the same GPU, played side by side at real speed. Both sides get the same prompt and produce the same output.
 This directory makes it again.

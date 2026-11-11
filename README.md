@@ -15,15 +15,6 @@ in it, for RDNA and CDNA, with build-time checks against the errors that fail
 silently (spills, missing waits, MFMA hazards).
 [What it is and is not](docs/positioning.md).
 
-![The same 8,192-token prompt to MiniCPM-V-4.7-1B, stock vLLM (left) and vLLM with hk-dsl (right), 256 identical output tokens: first token after 0.60 s and 0.24 s, decode at 48 and 61 tokens/s](docs/assets/readme-demo-ttft.gif)
-
-*Radeon PRO W7900D, MiniCPM-V-4.7-1B with its production settings (eager mode), stock vLLM vs vLLM with
-hk-dsl 0.9.19, in one process. Both sides get the same prompt, 8,192 input tokens, with prefix caching off, and
-produce 256 output tokens with identical text (greedy, ignore_eos). Over 5 rounds, the medians: first token
-0.60 s -> 0.24 s (2.52x sooner), decode 48 -> 61 tokens/s (1.27x faster). The GIF plays the round closest to
-those medians (2.51x, 1.27x) at real speed ([how](tools/hk-bench/serving/readme_demo/README.md),
-[scorecard](docs/performance/scorecard.md)).*
-
 ## Quick start
 
 **Faster vLLM and SGLang on Radeon.** One command, in the environment that
