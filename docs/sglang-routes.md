@@ -127,6 +127,29 @@ default keeps the old boot, which needs `HK_SGLD=1`; run `install` again
   1x32760x1536 on a W7900D: 2.6 / 2.2 / 3.0 ms -> 0.36 / 0.89 / 0.59 ms a
   call; a Wan2.1 832x480x81 video 1.038x.
 
+Two more are **opt-in** until an end-to-end image-edit smoke on MiniMax H3
+(`HK_SGLD_H3VAE=1`, `HK_SGLD_PATCHEMBED=1`); neither is an hk kernel, both
+steer the work to a cheaper exact form:
+
+- **h3vae**: MiniMax H3's VAE convs (`BaseConv3d` of
+  `sglang.multimodal_gen.runtime.models.vaes.minimax_h3_video_vae.conv`) on a
+  single frame -- every encoder conv of an image edit's reference image. The
+  conv pads a one-frame input with `kt - 1` zero frames in front (causal), so
+  its one output frame is a conv2d of the frame with the last time tap: exact
+  up to summation order, `kt` x fewer FLOPs, and MIOpen's conv2d instead of
+  its conv3d's im2col. 1.99-7.35x a conv at the encoder's 14 shapes on a
+  W7900D (128 channels at 258^2 to 1024 at 18^2), about 2.2 s -> 0.6 s an
+  edit. More frames, replicate time padding or a pre-padded input keep the
+  engine's. RDNA only: on gfx950 MIOpen's conv2d at these shapes has 1.6x
+  the mean error of its conv3d, so the route leaves the engine's there.
+- **patchembed**: Qwen3-VL's vision patch embedding
+  (`Qwen3VLVisionPatchEmbed` of `sglang.srt.models.qwen3_vl`), whose conv3d has
+  kernel == stride over each whole (C, T, P, P) patch, as the one F.linear it
+  is -- SGLang's own `Conv3dLayer._forward_mulmat`, which MiniMax H3's vision
+  tower turns off (`disable_linear=True`). 4096 patches on a W7900D: 538 ms of
+  MIOpen conv3d -> 0.28 ms. Where SGLang already takes its linear path the
+  route leaves it.
+
 The third, ConvRot INT8 (hk's `convrot_int8` backend, for `--quantization
 convrot_int8`), **stays opt-in**: it is lossy by design.
 `HK_SGLD=attn,linear,convrot` or `HK_SGLD_CONVROT=1` turns it on.

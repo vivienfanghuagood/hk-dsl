@@ -133,8 +133,11 @@ FAMILIES = [
          "bf16 or fp32 outputs", routes=["sgld_ditnorm"], tests=["test_route_paths.py"]),
     dict(name="conv3d", what="a conv3d as one conv2d over its time taps stacked on the channels, or "
                              "as calls of 2 output frames, the engine's own convs: no hk kernel; it "
-                             "keeps MIOpen off its naive reference conv3d and its im2col",
+                             "keeps MIOpen off its naive reference conv3d and its im2col. The routes "
+                             "also run a causal single frame as a conv2d with the last time tap "
+                             "(sgld_h3vae) and a kernel == stride patch embedding as one F.linear "
+                             "(sgld_patchembed)",
          entries=["hk.ops.conv3d.as_conv2d", "hk.ops.conv3d.frames"],
          arches=("gfx1100", "gfx1201"), dtypes="any the engine's conv takes (bf16 measured)",
-         routes=["sgld_vaeconv"], tests=["test_route_paths.py"]),
+         routes=["sgld_vaeconv", "sgld_h3vae", "sgld_patchembed"], tests=["test_route_paths.py"]),
 ]

@@ -299,6 +299,17 @@
     "scale"
    ]
   },
+  "sgld_h3vae": {
+   "conv": true,
+   "conv3d": true,
+   "forward": [
+    "self",
+    "x"
+   ],
+   "one_frame_causal_zeros": true,
+   "sets": true,
+   "spatial_pad": true
+  },
   "sgld_linear": {
    "apply": [
     "self",
@@ -306,6 +317,15 @@
     "x",
     "bias"
    ]
+  },
+  "sgld_patchembed": {
+   "forward": [
+    "self",
+    "hidden_states"
+   ],
+   "kernel_is_stride": true,
+   "patch_order": true,
+   "sets": true
   },
   "sgld_qknorm": {
    "apply_qk_norm_rope": [
