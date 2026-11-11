@@ -252,6 +252,20 @@ def scaled_dot_product_attention(query, key, value, attn_mask=None,
         return torch_sdpa(
             query, key, value, attn_mask=attn_mask, dropout_p=dropout_p,
             is_causal=is_causal, scale=scale, enable_gqa=enable_gqa)
+    if torch.compiler.is_compiling():
+        # One opaque op for the compiler: traced through, the kernel's writes into views of a
+        # fresh output became aliases AOT autograd could not replay (IndexError in
+        # gen_alias_from_base, every SGLang-Diffusion request under --enable-torch-compile).
+        return _compiled_op()(query, key, value, bool(is_causal), scale)
+    return _attention(query, key, value, is_causal, scale)
+
+
+def _attention(query, key, value, is_causal, scale):
+    """The kernel's call, once `_verdict` has taken it. The output is a fresh tensor (never a
+    view): (B, H, N, D) contiguous, or (B, H, N, D) with (B, N, H, D) strides when q, k and v
+    are such views (`_bnhd_views`) -- what `_compiled_op`'s fake returns."""
+    import torch  # noqa: PLC0415
+
     STATS["kernel"] += 1
     if not is_causal and _k3_on() and _k3_fits(query, key, value, scale):
         from . import attn_k3  # noqa: PLC0415
@@ -269,17 +283,48 @@ def scaled_dot_product_attention(query, key, value, attn_mask=None,
         # kernel reads that memory where it is (no copies in, none out) and
         # the output is handed back as the same kind of view.
         b, h, n, d = query.shape
-        out = torch.empty((b, n, h, d), device=query.device, dtype=query.dtype)
+        out = _bnhd_empty(query)
         flat = [t.transpose(1, 2).reshape(t.shape[0], 1, t.shape[2], -1)
-                for t in (query, key, value, out.transpose(1, 2))]
+                for t in (query, key, value, out)]
         _run_for(d, bool(is_causal), scale, n, bnhd=True)(*flat)
         STATS["bnhd"] += 1
-        return out.transpose(1, 2)
+        return out
     q, k, v = query.contiguous(), key.contiguous(), value.contiguous()
     out = torch.empty_like(q)
     _run_for(q.shape[-1], bool(is_causal), scale, q.shape[-2],
              mapping=_attn._mapping(q, k, bool(is_causal)))(q, k, v, out)
     return out
+
+
+def _bnhd_empty(q):
+    """A (B, H, N, D) tensor laid out as (B, N, H, D) memory: a base, not a transposed view."""
+    b, h, n, d = q.shape
+    return q.new_empty_strided((b, h, n, d), (n * h * d, d, h * d, 1))
+
+
+_OP: List = []
+
+
+def _compiled_op():
+    """`_attention` as torch.ops.hk_sdpa.attention, for torch.compile: opaque to the compiler,
+    with a fake that gives the output's shape and layout from the inputs'."""
+    if not _OP:
+        import torch  # noqa: PLC0415
+
+        # the schema spelled out: this module's annotations are strings (__future__)
+        @torch.library.custom_op("hk_sdpa::attention", mutates_args=(), schema=(
+            "(Tensor query, Tensor key, Tensor value, bool is_causal, float? scale) -> Tensor"))
+        def attention(query, key, value, is_causal, scale):
+            return _attention(query, key, value, is_causal, scale)
+
+        @attention.register_fake
+        def _(query, key, value, is_causal, scale):
+            if _bnhd_views(query, key, value):
+                return _bnhd_empty(query)
+            return query.new_empty(query.shape)
+
+        _OP.append(attention)
+    return _OP[0]
 
 
 def _k3_fits(q, k, v, scale) -> bool:
