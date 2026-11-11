@@ -168,7 +168,7 @@ def _hk_linear(x, weight, bias):
     op = _gemm_op(s) if bias is None else _gemm_bias_op(s, m, n)
     key = (_bucket(m), n, k, bias is not None)
     if key not in DECISIONS:
-        DECISIONS[key] = _measure(op, a, weight, bias)
+        _decide(key, lambda: _measure(op, a, weight, bias))
         if os.environ.get("HK_SGLD_LOG", "0") not in _OFF:
             print(f"[hk] sglang-diffusion linear {m}x{n}x{k}{' +bias' if bias is not None else ''}: "
                   f"{DECISIONS[key][1]}", flush=True)
@@ -182,9 +182,51 @@ def _hk_linear(x, weight, bias):
     return out.view(*x.shape[:-1], n)
 
 
-#: (M bucket, N, K) -> (take hk's GEMM?, why), decided the first time a shape
-#: is seen in this process.
+#: (M bucket, N, K, bias?) -> (take hk's GEMM?, why), decided the first time a shape is seen and
+#: pinned in DECISIONS_FILE, so every later process -- and every TP rank -- takes the same kernel.
 DECISIONS = {}
+
+
+def decisions_file():
+    """Where this GPU's decisions are pinned: hk's cache directory (HK_CACHE_DIR), one file per arch
+    and device name. Delete it to decide again."""
+    import re  # noqa: PLC0415
+
+    import torch  # noqa: PLC0415
+
+    from ..runtime.compile import cache_dir  # noqa: PLC0415
+    from ..target import current_arch  # noqa: PLC0415
+
+    dev = re.sub(r"[^A-Za-z0-9]+", "-", torch.cuda.get_device_name()).strip("-").lower()
+    return cache_dir() / f"sgld_linear_{current_arch()}_{dev}.json"
+
+
+def _decide(key, measure):
+    """DECISIONS[key]: the pinned decision if this GPU has one, else measure() -- under a file lock,
+    so processes starting together (TP ranks) do not each time a near-tie and pick differently --
+    and pin it. A timed decision can flip between processes at a near-tie shape; a pinned one cannot,
+    so the same seed gives the same image in every process."""
+    import fcntl  # noqa: PLC0415
+    import json  # noqa: PLC0415
+
+    path = decisions_file()
+    skey = ",".join(str(int(v)) for v in key)
+    with open(f"{path}.lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            table = json.loads(path.read_text()) if path.exists() else {}
+        except ValueError:                       # a torn file: decide again
+            table = {}
+        if skey in table:
+            take, why = table[skey]
+            DECISIONS[key] = (bool(take), f"{why} (pinned in {path.name})")
+            return DECISIONS[key]
+        DECISIONS[key] = measure()
+        table[skey] = list(DECISIONS[key])
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(table, indent=1, sort_keys=True))
+        os.replace(tmp, path)
+    return DECISIONS[key]
 
 #: hk must beat the engine by this much at a shape to take it: the decision is
 #: a few timed calls, and a near-tie is not worth a different kernel.

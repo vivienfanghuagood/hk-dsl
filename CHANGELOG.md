@@ -9,6 +9,9 @@ The next version's notes collect here until it is released.
 - SGLang-Diffusion's linear route takes an input that is rows of a wider buffer -- a DiT's fc2 reading the
   activation half of its gate / up buffer -- as it is, passing the row stride to hk's GEMM; it had gone to
   hipBLASLt. MiniMax H3's fc2 on a W7900D: 1.89x / 1.57x `F.linear` on the same view at 1072 / 3120 rows.
+
+**SGLang-Diffusion: the same seed gives the same image in every process.** `sgld_linear` decided hk vs `F.linear` per shape by timing in each process, so a near-tie shape could take different kernels in different processes (or TP ranks) and change the image slightly (seen in MiniMax H3-Image's edit). The decision is now pinned per GPU in hk's cache directory the first time a shape is seen, under a file lock.
+
 - vLLM's prefill route takes TRITON_ATTN caches past 4 GiB. HipKittens' RDNA `gl` formed a tile's element
   index in 32 bits, which wrapped at 2^31 elements, so such a cache was declined; now it is 64-bit
   (HipKittens #6). On a hybrid model -- MiniCPM-V-4.7, the Qwen3.5 family, whose attention layers share one

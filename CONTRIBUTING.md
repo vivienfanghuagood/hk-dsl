@@ -1,5 +1,41 @@
 # Contributing to hk-dsl
 
+## Your first contribution
+
+Most changes need no GPU: the language, the passes, the generated C++, the docs and their tests all run in
+the IR tier, on any x86-64 Linux machine. On Ubuntu 22.04 with its Python 3.10, CI's prebuilt MLIR saves the
+~20-minute LLVM build:
+
+```bash
+sudo apt-get install -y git cmake ninja-build g++ python3-pip python3-dev zstd curl
+git clone --recursive https://github.com/vivienfanghuagood/hk-dsl.git && cd hk-dsl
+sudo mkdir -p /opt/hk-llvm && curl -sSL \
+  https://github.com/vivienfanghuagood/hk-dsl/releases/download/ci-mlir-23.1.3/mlir-23.1.3-install-cp310-ubuntu22.04-x86_64.tar.zst \
+  | sudo tar -C /opt/hk-llvm -I zstd -xf -                       # 889 MB
+python3 -m pip install "nanobind==2.15.0" numpy pybind11 typing_extensions pytest pytest-xdist
+HK_LLVM_ROOT=/opt/hk-llvm PYTHON=/usr/bin/python3 scripts/build_hk_mlir.sh       # the dialect, ~1 min
+PYTHONPATH=python python3 -m pytest -q -m "not gpu" -n auto tests/hk/ir           # the IR tier, ~1 min
+```
+
+In a fresh `ubuntu:22.04` container this took 17 minutes end to end, most of it the download; the dialect built
+in 42 s and the IR tier ran 2,037 tests in 32 s. Another Python or distribution builds MLIR itself first
+(`scripts/build_mlir.sh`, [building](docs/building.md#mlir-and-the-dialect)).
+
+Then:
+- **A docs change** runs the same tier, which executes or traces the code blocks of the language, quick-start and
+  template pages. A change to a page that feeds `llms-full.txt` (the language, `hk.check`, the API pages) regenerates it with
+  `python3 scripts/gen_api_docs.py`.
+- **A kernel or route change** also needs the codegen tier (hipcc, no GPU) and, before it merges, the GPU tier.
+  You can run it on your own AMD GPU ([testing](docs/testing.md#running-each-tier)). Pull requests run it on
+  the maintainers' W7900D, R9700 and MI355X runners.
+- **A performance result** for an issue or a PR measures both arms in one process, alternating, for several rounds.
+  It reports the median and the range ([how numbers are taken](docs/performance/method.md)). A single run, or two
+  runs in separate processes, cannot tell a 5% change from noise on these GPUs.
+- **Questions:** in an issue. Include the `[hk]` line from the engine's log and the output of
+  `python3 -m hk.integration --status` when it is about an engine.
+
+## The rules
+
 Issues and pull requests are welcome. These pages cover the mechanics:
 - [testing](docs/testing.md): the tiers, and the gates for a change to the generated code;
 - [the default-on rule](docs/testing.md#the-default-on-rule): what an engine route needs before it
