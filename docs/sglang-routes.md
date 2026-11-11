@@ -78,7 +78,11 @@ default keeps the old boot, which needs `HK_SGLD=1`; run `install` again
   have one) is added in the GEMM's store, `hk.templates.gemm`'s bias
   epilogue, as hipBLASLt does: 1.22-1.26x `F.linear` at Wan2.1's shapes,
   1.047x a Wan2.1 832x480x81 video. `LINEAR_BIAS = False` leaves biased
-  projections to the engine;
+  projections to the engine. Each shape is decided once, by timing hk against
+  `F.linear` (hk must win by `MARGIN`, 3%), and the decision is pinned in
+  hk's cache directory (`sgld_linear_<arch>_<gpu>.json` under `HK_CACHE_DIR`),
+  so every later process and every TP rank takes the same kernel and the same
+  seed gives the same image; delete the file to decide again;
 - **vaeconv**: Wan's VAE conv3d (`WanCausalConv3d` of
   `sglang.multimodal_gen.runtime.models.vaes.wanvae`) as calls of 2 output
   frames, each the engine's own conv on a slice of the input. On gfx1100
