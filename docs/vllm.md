@@ -70,6 +70,27 @@ to 60 seconds (`HK_AUTOTUNE_BUDGET`), before vLLM sizes its cache. Both are
 kept in hk's cache (`~/.cache/hk`, or `HK_CACHE_DIR`), so later starts skip
 them. In a container, put `HK_CACHE_DIR` on a volume.
 
+## See the difference on your model
+
+Run one benchmark against the server twice: once as it is, and once started with `HK_DISABLE=1`, which gives you
+stock vLLM in the same environment. vLLM's own client does it. Here it is with long prompts, which is where hk
+gains most:
+
+```bash
+vllm serve Qwen/Qwen3-8B                       # terminal 1: with hk
+vllm bench serve --model Qwen/Qwen3-8B --dataset-name random \
+    --random-input-len 8192 --random-output-len 128 --num-prompts 8 --max-concurrency 1
+# stop the server, start it again as `HK_DISABLE=1 vllm serve Qwen/Qwen3-8B`, run the same bench
+```
+
+Compare `Median TTFT` (time to first token) and `Median TPOT` (time per output token) between the two runs. On a
+W7900D with Qwen3-8B the first token comes much sooner with hk at this prompt length, and the time per output token
+is the same: hk's gain there is prefill. At short prompts and one request the two runs can be equal.
+
+Two separate server starts can differ by a few percent on their own. To trust a small difference, alternate the
+two several times and compare medians. The project's own numbers are measured in one process, in alternating
+rounds ([how numbers are taken](performance/method.md), [the scorecard](performance/scorecard.md)).
+
 ## Supported GPUs and models
 
 | GPU | arch | hk in vLLM |
