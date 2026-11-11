@@ -27,7 +27,7 @@ vLLM serving DeepSeek-V4.1-Flash with real weights, tensor parallel over two MI3
   dropped: the tuned-stock "mixed" run of round 1 (a stall), so that cell has one round.
 
 **Software.** vLLM 0.32.1rc1.dev36 (`vllm/vllm-openai-rocm` nightly e68efc685, ROCm 10.0, torch 2.12, AITER 0.1.25),
-hk-dsl 0.9.16. Engine: TP2, max_model_len 16640, no prefix caching.
+hk-dsl 0.9.16. Engine: TP2, max_model_len 16640, no prefix caching. Execution mode: graphs (torch.compile with CUDA graphs, `FULL_AND_PIECEWISE`) in every arm.
 
 **The arms.**
 
@@ -83,6 +83,15 @@ models these GPUs actually serve.
   against the GitHub release asset. The version is given per row.
 - **What a cell is.** The median of the per-round medians, with the range over rounds. A ratio whose round ranges
   overlap is shown as `=` (no difference), never as a win. Ratios are stock / hk: above 1 means hk is faster.
+- **Execution mode.** Each row says how both arms ran, read from the engine logs of the run:
+  - *graphs*: vLLM's default, torch.compile with CUDA graphs (HIP graphs; `FULL_AND_PIECEWISE`).
+  - *eager*: no compilation and no graphs. For vLLM that is `enforce_eager`, MiniCPM-V-4.7's production setting. For
+    SGLang-Diffusion it is the engine's default (no `--enable-torch-compile`).
+
+  A gain over an eager stock is only a fair claim if eager is stock's best mode. &dagger; marks vLLM rows where it is
+  not: stock with graphs is faster, and these rows are being re-measured against it. &Dagger; marks SGLang-Diffusion
+  rows whose stock has not yet been measured with `--enable-torch-compile`. Until then, treat both kinds of rows as
+  provisional.
 - **Foreign processes.** Another user's process inside a measured block discards that round in both arms. A row
   stands only with at least 3 clean rounds left. A row that does not meet these rules is not quotable, and is not shown.
 
@@ -90,22 +99,22 @@ models these GPUs actually serve.
 
 vLLM rows: vLLM on ROCm 7.14 (TheRock), torch 2.13. SGLang-Diffusion rows: SGLang's Radeon build on ROCm 7.2, torch 2.9.1.
 
-| model | metric | stock | hk | stock / hk |
-|---|---|---|---|---|
-| MiniCPM5-2B (hk 0.9.14) | TPOT, 1 / 4 / 8 concurrent (ms) | 7.90 / 9.29 / 10.66 | 7.92 / 8.76 / 9.16 | 1.00x (slightly worse) / 1.06x / 1.16x |
-| | TTFT 8k / 32k (ms) | 907 / 12,550 | 591 / 4,247 | 1.54x / 2.95x |
-| | GSM8K (1319, greedy) | 73.77% | 74.60% | not significant (McNemar p 0.42) |
-| MiniCPM-V-4.7 1B, eager (hk 0.9.14) | TPOT, 1 / 4 / 8 concurrent (ms) | 21.5 / 22.3 / 27.2 | 21.3 / 22.2 / 27.3 | 1.01x / = / = |
-| | TTFT 8k / 32k (ms) | 656 / 7,451 | 270 / 1,384 | 2.43x / 5.38x |
-| | GSM8K | 81.50% | 80.89% | not significant (p 0.42) |
-| MiniCPM-V-4.7 1B, eager: the `vllm_norm` route (hk 0.9.19), route off / on | TPOT, 1 / 4 / 8 concurrent (ms) | 22.39 / 22.56 / 21.99 | 16.81 / 18.22 / 17.58 | 1.33x / 1.24x / 1.25x |
-| | TTFT 8k (ms) | 358.1 | 334.5 | 1.07x |
-| | GSM8K (300, greedy) | 81.67% | 82.33% | not significant (p 0.80) |
-| MiniCPM-V-4.7 35B-A3B, 2 GPUs (hk 0.9.14) | TPOT, 1 / 4 / 8 concurrent (ms) | 61.8 / 63.1 / 73.3 | 61.2 / 62.0 / 64.5 | = / = / 1.14x |
-| | TTFT 8k / 32k (ms) | 2,277 / 18,070 | 1,575 / 6,957 | 1.45x / 2.60x |
-| | GSM8K | 95.22% | 95.83% | not significant (p 0.08); a second accuracy run is planned |
-| Wan2.1-T2V-1.3B, 832x480x81, 20 steps (hk 0.9.14) | seconds per video | 496.7 (496.5-497.5) | 187.1 (187.1-187.6) | 2.66x |
-| Qwen-Image 2.1, 1024x1024, 30 steps (hk 0.9.14) | seconds per image | 42.0 | 26.2 | 1.60x |
+| model | execution mode | metric | stock | hk | stock / hk |
+|---|---|---|---|---|---|
+| MiniCPM5-2B (hk 0.9.14) | graphs | TPOT, 1 / 4 / 8 concurrent (ms) | 7.90 / 9.29 / 10.66 | 7.92 / 8.76 / 9.16 | 1.00x (slightly worse) / 1.06x / 1.16x |
+| | | TTFT 8k / 32k (ms) | 907 / 12,550 | 591 / 4,247 | 1.54x / 2.95x |
+| | | GSM8K (1319, greedy) | 73.77% | 74.60% | not significant (McNemar p 0.42) |
+| MiniCPM-V-4.7 1B, eager (hk 0.9.14) | eager &dagger; | TPOT, 1 / 4 / 8 concurrent (ms) | 21.5 / 22.3 / 27.2 | 21.3 / 22.2 / 27.3 | 1.01x / = / = |
+| | | TTFT 8k / 32k (ms) | 656 / 7,451 | 270 / 1,384 | 2.43x / 5.38x |
+| | | GSM8K | 81.50% | 80.89% | not significant (p 0.42) |
+| MiniCPM-V-4.7 1B, eager: the `vllm_norm` route (hk 0.9.19), route off / on | eager &dagger; | TPOT, 1 / 4 / 8 concurrent (ms) | 22.39 / 22.56 / 21.99 | 16.81 / 18.22 / 17.58 | 1.33x / 1.24x / 1.25x |
+| | | TTFT 8k (ms) | 358.1 | 334.5 | 1.07x |
+| | | GSM8K (300, greedy) | 81.67% | 82.33% | not significant (p 0.80) |
+| MiniCPM-V-4.7 35B-A3B, 2 GPUs (hk 0.9.14) | eager &dagger; | TPOT, 1 / 4 / 8 concurrent (ms) | 61.8 / 63.1 / 73.3 | 61.2 / 62.0 / 64.5 | = / = / 1.14x |
+| | | TTFT 8k / 32k (ms) | 2,277 / 18,070 | 1,575 / 6,957 | 1.45x / 2.60x |
+| | | GSM8K | 95.22% | 95.83% | not significant (p 0.08); a second accuracy run is planned |
+| Wan2.1-T2V-1.3B, 832x480x81, 20 steps (hk 0.9.14) | eager &Dagger; | seconds per video | 496.7 (496.5-497.5) | 187.1 (187.1-187.6) | 2.66x |
+| Qwen-Image 2.1, 1024x1024, 30 steps (hk 0.9.14) | eager &Dagger; | seconds per image | 42.0 | 26.2 | 1.60x |
 
 **The `vllm_norm` rows** measure one route, not stock against all of hk. Both columns run hk 0.9.19 with its
 default-on routes; the left one turns `vllm_norm` off (`HK_VLLM_NORM=0`). MiniCPM-V-4.7's production engine
@@ -123,14 +132,14 @@ hk's image is 42.8 dB from stock's.
 
 vLLM rows: vLLM on ROCm 7.14 (TheRock), torch 2.13. SGLang-Diffusion rows: upstream SGLang 0.5.23 on ROCm 7.2.3, torch 2.10.
 
-| model | metric | stock | hk | stock / hk |
-|---|---|---|---|---|
-| Qwen3.8-27B GPTQ int4 (hk 0.9.16) | TPOT, 4 / 8 concurrent (ms) | 51.5 / 109.1 | 33.8 / 37.2 | 1.52x / 2.93x |
-| | TTFT 512 / 2k tokens (ms) | 375 / 1,507 | 284 / 1,165 | 1.32x / 1.29x |
-| Qwen3.8-27B AWQ int4 (AMD Quark W4A16) (hk 0.9.16) | TPOT, 4 / 8 concurrent (ms) | 37.8 / 61.9 | 32.4 / 34.4 | 1.17x / 1.80x |
-| | TTFT 512 / 2k tokens (ms) | 333 / 1,401 | 274 / 1,122 | 1.22x / 1.25x |
-| Wan2.1-T2V-1.3B, 832x480x81, 20 steps (hk 0.9.14) | seconds per video | 283.6 (282.0-295.1) | 178.0 (177.4-190.0) | 1.59x |
-| Qwen-Image 2.1, 1024x1024, 30 steps (hk 0.9.20) | seconds per image | 29.1 (28.0-42.2) | 25.5 (24.4-69.9) | = (ranges overlap) |
+| model | execution mode | metric | stock | hk | stock / hk |
+|---|---|---|---|---|---|
+| Qwen3.8-27B GPTQ int4 (hk 0.9.16) | graphs | TPOT, 4 / 8 concurrent (ms) | 51.5 / 109.1 | 33.8 / 37.2 | 1.52x / 2.93x |
+| | | TTFT 512 / 2k tokens (ms) | 375 / 1,507 | 284 / 1,165 | 1.32x / 1.29x |
+| Qwen3.8-27B AWQ int4 (AMD Quark W4A16) (hk 0.9.16) | graphs | TPOT, 4 / 8 concurrent (ms) | 37.8 / 61.9 | 32.4 / 34.4 | 1.17x / 1.80x |
+| | | TTFT 512 / 2k tokens (ms) | 333 / 1,401 | 274 / 1,122 | 1.22x / 1.25x |
+| Wan2.1-T2V-1.3B, 832x480x81, 20 steps (hk 0.9.14) | eager &Dagger; | seconds per video | 283.6 (282.0-295.1) | 178.0 (177.4-190.0) | 1.59x |
+| Qwen-Image 2.1, 1024x1024, 30 steps (hk 0.9.20) | eager &Dagger; | seconds per image | 29.1 (28.0-42.2) | 25.5 (24.4-69.9) | = (ranges overlap) |
 
 - **Single-request TPOT on R9700 is not quoted.** It is bimodal per engine build in both arms (about 29 ms or 37 ms,
   depending on the build, not on hk); within a state hk and stock are equal (1.00x).
