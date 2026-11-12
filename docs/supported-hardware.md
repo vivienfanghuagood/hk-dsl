@@ -57,4 +57,6 @@ A route is on by default only on the GPUs where it met the [default-on rule](tes
 | `sgld_rope` | SGLang-Diffusion | `HK_SGLD_ROPE` | **on** | **on** | off | off |
 | `sgld_qknorm` | SGLang-Diffusion | `HK_SGLD_QKNORM` | **on** | off | off | off |
 | `sgld_ditnorm` | SGLang-Diffusion | `HK_SGLD_DITNORM` | **on** | off | off | off |
+| `sgld_h3vae` | SGLang-Diffusion | `HK_SGLD_H3VAE` | opt-in | opt-in | opt-in | opt-in |
+| `sgld_patchembed` | SGLang-Diffusion | `HK_SGLD_PATCHEMBED` | opt-in | opt-in | opt-in | opt-in |
 | `sdpa_k3` | `hk.ops` | `HK_SDPA_K3` | **on** | off | off | off |
