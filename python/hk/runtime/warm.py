@@ -141,7 +141,11 @@ def _all_shipped_jobs():
     The second constexpr set is the top of the TPW range on the sixteen-warp
     kernels, which is what `norm.plan` emits for a row of 65 to 80 blocks and
     the only place MAX_TPW is exercised. EXACT=0 on purpose: the exact variant
-    has had its clamp and mask deleted and is the smaller of the two.
+    has had its clamp and mask deleted and is the smaller of the two. The top is
+    each kind's own cap (`norm._tpw_cap`): the fused-add kernel stops at three
+    tiles unfolded and inexact, because four spill -- a build of four is one no
+    plan asks for, and the resource gate rejects it on compilers where it spills
+    (ROCm 7.2.3's).
     """
     from ..ops import fused, norm, quant
 
@@ -153,7 +157,9 @@ def _all_shipped_jobs():
     jobs = jobs_for(kernels)
     top = {n: k for n, k in kernels.items()
            if n.endswith("_w16") and "TPW" in k.signature.parameters}
-    jobs += jobs_for(top, [{"TPW": norm.MAX_TPW, "FOLD": 1, "EXACT": 0}])
+    for name, k in top.items():
+        kind = name.rsplit(".", 1)[-1].split("_", 1)[0]
+        jobs += jobs_for({name: k}, [{"TPW": norm._tpw_cap(kind, 1, False), "FOLD": 1, "EXACT": 0}])
     return jobs
 
 
