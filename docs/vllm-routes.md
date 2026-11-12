@@ -70,6 +70,19 @@ only that kernel. The cache, its layout and block size, the cache write, and the
 decode of decode-only steps all stay vLLM's. So does the rest of the backend
 vLLM picked.
 
+**How to read the numbers in this section.** The ratios below are **kernel-level**: hk's kernel against the
+faster of TRITON_ATTN's and ROCM_ATTN's on the same batch, in one process, cold KV. Each one names the PR that
+measured it and the first release that shipped it. They decide which batches the route takes; they are not
+end-to-end claims. End to end, prefill runs outside CUDA graphs in every vLLM mode, and these are the
+measured results, both arms compile + CUDA graphs (vLLM's default), stock in its best mode, released hk 0.9.20:
+
+- MiniCPM-V-4.7-35B-A3B at TP2 on two W7900Ds, replaying real gateway traffic for one replica:
+  busy-hour TTFT p90 11.3 s -> 0.24 s, median-hour e2e p50 36.7 s -> 0.94 s.
+- Per kernel, the attention's GPU time in a 32k prefill goes from 12.0 s to 0.97 s.
+
+On hybrid models whose shared KV cache is larger than 4 GiB (MiniCPM-V-4.7-1B: about 32 GiB), 0.9.20 leaves
+prefill to vLLM; main takes it since #374, which is not yet in a release.
+
 | backend | what is rebound | hk's kernel |
 |---|---|---|
 | `ROCM_ATTN` (ROCm's default) | `prefix_prefill.context_attention_fwd`, which `chunked_prefill_paged_decode` calls for requests with more than one query | `paged_prefill` `layout="rocm"`: K through a strided global over the x-split cache, V's pages already V^T |
@@ -107,7 +120,7 @@ never slower on a shape it takes). Two kinds:
 
 - decode rows beside a small prefill: hk's kernel walks each decode's whole
   context in one workgroup, where vLLM's splits it. A 512-token prompt beside
-  8 decodes over 4k tokens ran at 0.46-0.73x on a W7900D;
+  8 decodes over 4k tokens ran at 0.46-0.73x on a W7900D (kernel-level);
 - a short chunk: too few query tiles to fill the card (a 128-token chunk of
   MiniCPM5-2B at 0.91x on a W7900D).
 
@@ -134,8 +147,8 @@ at most a measured share of the prefill's work (`vllm_prefill.SPLITS`). Measured
 against the faster of TRITON_ATTN's and ROCM_ATTN's kernels on 68 shapes a model
 and on the chunks vLLM's default 2048-token budget makes (1024-2040 tokens, first
 or after a prefix, beside 4-16 decodes;
-`tools/hk-bench/results/2026-11-04/<gpu>/prefill-split-sweep.json`), every
-batch it splits is faster:
+`tools/hk-bench/results/2026-11-04/<gpu>/prefill-split-sweep.json`; kernel-level, #249, first released in
+0.9.1), every batch it splits is faster:
 
 | GPU | MiniCPM5-2B (d128) | Qwen3.8-27B, MiniCPM-V-4.7 (d256) |
 |---|---|---|
@@ -185,7 +198,7 @@ its requests of more than one query; its own paged decode keeps the decode rows.
 So neither kind of batch above reaches hk's kernel there. Measured in one process
 against ROCM_ATTN's own prefill (`attention_bench.py prefill --arms hk_rocm,rocm_attn`,
 68 shapes a model: prompts, chunks after a prefix, prompts beside 1-16 decodes over
-1k-16k tokens), every shape is faster:
+1k-16k tokens; kernel-level, #247, first released in 0.9.1), every shape is faster:
 
 | GPU | MiniCPM5-2B | Qwen3-8B |
 |---|---|---|
@@ -209,14 +222,14 @@ launch merges the splits.
 
 - `HK_VLLM_DECODE` unset: head size 256 at every batch. Those are hybrid
   models' attention layers (Qwen3.8, Qwen3.6, MiniCPM-V-4.7): there hk is
-  1.02-4.0x the faster of TRITON_ATTN's kernel and ROCM_ATTN's (which runs an
+  1.02-4.0x (kernel-level; #220, hk 0.9.0) the faster of TRITON_ATTN's kernel and ROCM_ATTN's (which runs an
   unsplit Triton fallback on pages that are not a power of two).
 - `HK_VLLM_DECODE=1`: head size 128 too, opt-in. It is for one or two
   requests decoding over long contexts -- a single user, local inference --
   and is kept as groundwork for that. It takes up to 4 (request, kv head)
   pairs (one or two requests of MiniCPM5-2B), with as many splits as the GPU
   has WGPs. Serving MiniCPM5-2B on a W7900D against TRITON_ATTN's decode, one
-  request: TPOT 1.08x at 8k tokens, 1.20x at 16k, 1.40x at 32k. The rule
+  request, both arms under CUDA graphs (#239, hk 0.9.0): TPOT 1.08x at 8k tokens, 1.20x at 16k, 1.40x at 32k. The rule
   cannot look at the context: a decode step runs as a CUDA graph captured
   once per batch size, so one or two requests over a short context are taken
   too, at about 1.03x (4k). Four requests were 0.98x at 4k-8k and stay
@@ -238,9 +251,9 @@ batch size is captured with is right for every replay. It takes up to 16
 kernel is as fast. gfx1100 only.
 
 On a W7900D with MiniCPM5-2B, against ROCM_ATTN's paged decode in one process
-(`attention_bench.py decode --arms rocm_attn,triton,hk_rocm`): one request
+(`attention_bench.py decode --arms rocm_attn,triton,hk_rocm`; kernel-level, #302, hk 0.9.10): one request
 1.19-1.29x from 16k tokens, 0.95x at 4k; two to eight requests 1.01-1.25x.
-Serving, two engines in one process with CUDA graphs: TPOT 1.01x at one
+Serving (end to end), two engines in one process, both under CUDA graphs: TPOT 1.01x at one
 request over 2k-8k tokens, 1.05x at 32k, 1.07x at 64k, 1.02-1.03x at two to
 eight requests; TTFT unchanged. It stays opt-in: weighted by a measured real
 serving mix the kernel is 1.10-1.14x against the faster stock kernel, under
@@ -303,7 +316,7 @@ decodes first by the builder:
   `vllm_backend.TRITON_DECODE_MAX` is the boundary; 0 turns the routing off.
   `HK_TRITON_DECODE_ALSO="17-24,49-56"` gives Triton further ranges of
   batch sizes; off by default, because in the captured step Triton's
-  kernel at 15-22 requests and 4096 tokens took 0.877 ms a call under
+  kernel at 15-22 requests and 4096 tokens took (kernel-level, #13, hk 0.6.0) 0.877 ms a call under
   triton-rocm 3.7.1 (1.93 under Triton 3.8.0) against hk's 0.449, though on
   a compact bench cache it is the faster at 24.
 * **Prefill**: `hk.ops.paged_prefill`, one launch for every prefill request
@@ -578,7 +591,14 @@ between norms as in a decoder layer and both sides compiled and captured, hk's n
 faster than inductor's (hidden 1024 and 2048, 1 to 4,096 rows), closer to float64; this is
 opt-in until it is measured end to end.
 
-Checked on MiniCPM-V-4.7 with its production args on W7900Ds, hk 0.9.18, the route off and on,
+**Eager only.** The gains below are measured with `--enforce-eager` in both arms, as MiniCPM-V-4.7's production
+deployment runs, and they come from launch overhead: in eager mode each norm is about 8 PyTorch kernels, and
+hk's fused kernel replaces them. Under compile + CUDA graphs, vLLM's default and about 5x faster at one request
+for these models, inductor already fuses the norm. There the route is off by default, and
+`HK_VLLM_NORM=compile` changed TPOT by about 2% (MiniCPM-V-4.7-1B, W7900D, hk at #372 on top of 0.9.20;
+not a claim). Quote these numbers only as eager-mode numbers.
+
+Checked on MiniCPM-V-4.7 with its production args (eager) on W7900Ds, hk 0.9.18, the route off and on,
 one process, engines rebuilt per block, 4 alternating rounds (ranges disjoint):
 
 | model | TPOT at 1 / 4 / 8 requests | TTFT 8k | GSM8K-300 (off / on) |
@@ -586,7 +606,7 @@ one process, engines rebuilt per block, 4 alternating rounds (ranges disjoint):
 | 1B | 21.39 -> 16.70 ms (1.28x) / 1.21x / 1.24x | 1.07x | 81.7 / 82.7% (McNemar p 0.65) |
 | 35B-A3B, TP2 | 59.93 -> 52.28 ms (1.15x) / 1.11x / 1.10x | 1.06x | 96.0 / 97.0% (p 0.25) |
 
-On an R9700 (gfx1201), hk 0.9.19, the same design with 6 alternating rounds (ranges disjoint):
+On an R9700 (gfx1201), eager in both arms, hk 0.9.19, the same design with 6 alternating rounds (ranges disjoint):
 
 | model | TPOT at 1 / 4 / 8 requests | TTFT 2k / 8k | GSM8K-300 (off / on) |
 |---|---|---|---|

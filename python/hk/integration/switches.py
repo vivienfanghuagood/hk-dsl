@@ -96,9 +96,12 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "prefill), reading vLLM's tensors in place; "
        "act-order checkpoints refused",
        "gfx1100: Qwen3.8-27B-GPTQ-Int4 in the Radeon TheRock vLLM image against stock-fair "
-       "(TRITON_ATTN, TunableOp with a 256 MB rotating buffer), 3 starts an arm: GSM8K-200 equal, "
-       "TPOT ahead at 8-16 concurrent requests and level at 1 (RDNA scorecard); gfx1201: "
-       "Qwen3.8-27B-GPTQ-Int4 on one R9700 in the R9700 vLLM image (TRITON_ATTN), 3 alternating "
+       "(TRITON_ATTN, TunableOp with a 256 MB rotating buffer), both arms compile + CUDA graphs, "
+       "#162's build (before 0.9.0), 3 starts an arm: GSM8K-200 equal, "
+       "TPOT ahead at 8-16 concurrent requests and level at 1 (RDNA scorecard; gain source the "
+       "int4 GEMM's GPU time); gfx1201: "
+       "Qwen3.8-27B-GPTQ-Int4 on one R9700 in the R9700 vLLM image (TRITON_ATTN), both arms compile + "
+       "CUDA graphs, hk 0.9.16, 3 alternating "
        "starts an arm: GSM8K-200 equal, TPOT ahead at 4 and 8 concurrent requests (disjoint), "
        "level at 1 and for an 8k prompt"),
     _R("vllm_quark", "vllm", "HK_VLLM_QUARK", True, ("gfx1100", "gfx1201"),
@@ -106,10 +109,11 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "the fp16 batches vLLM runs on Triton on hk's 4-bit forms in place (decode to 64 tokens, "
        "the large-batch form above: prefill); on gfx1100's RDNA3W4A16LinearKernel 1-64 tokens on "
        "hk's decode GEMM (a copy of Quark's codes in hk's layout)",
-       "amd/Qwen3.8-27B-Quark-AWQ-INT4-W4A16, one process, engines rebuilt per arm, 4 alternating "
-       "rounds, GSM8K-200 equal (0 discordant) on both GPUs. gfx1201 (one R9700, R9700 vLLM image, "
+       "amd/Qwen3.8-27B-Quark-AWQ-INT4-W4A16, one process, engines rebuilt per arm, both arms "
+       "compile + CUDA graphs (vLLM's default), hk at #336 / #338 (released 0.9.15 / 0.9.16), 4 "
+       "alternating rounds, GSM8K-200 equal (0 discordant) on both GPUs. gfx1201 (one R9700, R9700 vLLM image, "
        "TRITON_ATTN): TPOT at 8 concurrent requests 1.64x, TTFT at 512 / 2048 tokens 1.16x / 1.17x "
-       "(disjoint), level at 1 and 4; kernel 1.9-3.6x vLLM at 6-32 tokens, 1.13-1.30x at 128-4096, "
+       "(disjoint), level at 1 and 4; kernel-level 1.9-3.6x vLLM at 6-32 tokens, 1.13-1.30x at 128-4096, "
        "1.05-1.20x at 64. gfx1100 (one W7900D, MiniCPM-V vLLM image): TPOT 1.13x / 1.18x / 1.25x "
        "at 1 / 4 / 8 concurrent requests (disjoint), TTFT level (prefill stays vLLM's there)"),
     _R("vllm_norm", "vllm", "HK_VLLM_NORM", True, ("gfx1100", "gfx1201"),
@@ -117,12 +121,16 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "fused (add+)RMSNorm at weight offset 1, where vLLM runs it as PyTorch ops: the eager calls; "
        "HK_VLLM_NORM=compile also takes the calls torch.compile traces, as one CUDA-graph-safe op "
        "(opt-in until measured end to end)",
-       "MiniCPM-V-4.7 1B and 35B-A3B (TP2) on W7900Ds, their production args (enforce_eager), hk "
+       "Eager only: the gain is launch overhead, and under compile + CUDA graphs there is none to "
+       "save (HK_VLLM_NORM=compile measured within 2% there; no claim). "
+       "MiniCPM-V-4.7 1B and 35B-A3B (TP2) on W7900Ds, their production args (enforce_eager, both "
+       "arms), hk "
        "0.9.18, route off vs on, engines rebuilt per block, 4 alternating rounds, all disjoint: TPOT "
        "at 1 / 4 / 8 requests 1.28x / 1.21x / 1.24x (1B) and 1.15x / 1.11x / 1.10x (35B), TTFT 8k "
        "1.07x / 1.06x; GSM8K-300 81.7 vs 82.7% and 96.0 vs 97.0% (McNemar p 0.65, 0.25); per call "
        "within 1 bf16 ulp of vLLM's native path, residuals bit-equal. gfx1201 (R9700, hk 0.9.19's route, "
-       "one process, engines rebuilt per block, 6 alternating rounds, all disjoint): MiniCPM-V-4.7-1B "
+       "one process, engines rebuilt per block, both arms eager, 6 alternating rounds, all disjoint): "
+       "MiniCPM-V-4.7-1B "
        "TPOT 1.27x / 1.25x / 1.20x, TTFT 2k / 8k 1.12x / 1.10x, GSM8K-300 82.0 vs 81.3% (p 0.79); "
        "Qwen3.5-9B eager TPOT 1.10x / 1.09x / 1.10x, TTFT 2k 1.09x (its larger GEMVs dilute the norms), "
        "GSM8K-300 95.0 vs 94.7%"),
@@ -142,6 +150,7 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "on vLLM's own tensors, for the validated expert shapes (VALIDATED)",
        "gfx1100: Qwen3.6-35B-A3B-AWQ (group 32) in the Radeon TheRock vLLM image against "
        "stock-fair' (TRITON_ATTN, TunableOp, vLLM's MoE config chosen per batch by in-vLLM time), "
+       "both arms compile + CUDA graphs, #169's build (before 0.9.0), "
        "3 alternating starts an arm: GSM8K-200 equal, TPOT ahead at 1, 8 and 16 concurrent "
        "requests and at 8k (disjoint), TTFT level. gfx1201: the same checkpoint on one R9700 in "
        "the R9700 vLLM image against stock-fair (TRITON_ATTN, a searched MoE config), 3 "
@@ -162,8 +171,11 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "batches at head size 256 (HK_VLLM_DECODE; =1 adds 128), and with HK_VLLM_ROCM_DECODE=1 "
        "ROCM_ATTN's decode-only batches at head size 128 (gfx1100); cache write and block size "
        "stay vLLM's",
-       "end-to-end gates passed best vs best (16k TTFT on a d128 model; 8k on a d256 hybrid "
-       "model at TP2, also against ROCM_ATTN), quality within stock's spread. "
+       "end-to-end gates passed best vs best, both arms compile + CUDA graphs (16k TTFT on a d128 "
+       "model; 8k on a d256 hybrid model at TP2, also against ROCM_ATTN; hk before 0.9.0), quality "
+       "within stock's spread; released 0.9.20 under CUDA graphs: MiniCPM-V-4.7-35B-A3B (TP2, "
+       "W7900D) replay TTFT p90 11.3 -> 0.24 s. Caches over 4 GiB fall back until #374 is "
+       "released. "
        "gfx1100 and gfx1201 (decode-only batches: gfx1100), bf16 (prefill calls: bf16 or fp16), "
        "head size 64 / 128 "
        "(and 256 on TRITON_ATTN), pages of 16 or 32 "
