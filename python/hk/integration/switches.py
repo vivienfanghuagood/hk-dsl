@@ -183,18 +183,20 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "OLMoE greedy tokens identical to stock's (history 25)"),
     _R("sgld_attn", "sglang_diffusion", "HK_SGLD_ATTN", True, ("gfx1100", "gfx1201"),
        "the DiT's attention (torch_sdpa backend)",
-       "Qwen-Image 2.1: 42.1 dB from stock and closer to an fp32 reference than stock "
-       "(history 46); gfx1201 (hk.ops.sdpa): 1.82-1.90x torch's SDPA at Wan2.1 / Qwen-Image "
-       "shapes, error vs fp32 equal to it; Wan2.1 832x480x81 denoise 228.7 -> 142.4 s (1.61x)",
+       "Qwen-Image 2.1 (W7900D, eager, hk 0.7): 42.1 dB from stock and closer to an fp32 reference "
+       "than stock (history 46); gfx1201 (R9700, hk 0.9.14): kernel 1.82-1.90x torch's SDPA at "
+       "Wan2.1 / Qwen-Image shapes, error vs fp32 equal to it; e2e eager vs stock eager: Wan2.1 "
+       "832x480x81 denoise 228.7 -> 142.4 s (1.61x). Eager only through 0.9.20 (torch.compile: #384)",
        part="attn"),
     _R("sgld_linear", "sglang_diffusion", "HK_SGLD_LINEAR", True, ("gfx1100",),
        "the DiT's projections at M >= 1024 where hk measured faster, with or without a bias "
        "(a bias in the GEMM's store)",
-       "Qwen-Image 2.1 with attention: 40.0 dB from stock and closer to fp32 than stock "
-       "(history 46); Wan2.1 832x480x81's biased projections 1.22-1.26x F.linear, same error vs "
-       "fp32: 221.4 -> 211.4 s a video (1.047x, same process), inside stock's run-to-run spread. "
-       "gfx1201: off -- hk's GEMM at Qwen-Image 2.1's projections is 1.08-1.12x F.linear "
-       "under TunableOp on an R9700 (1.04-1.19x over the bench shapes), short of 1.15x",
+       "Qwen-Image 2.1 with attention (W7900D, eager, hk 0.7): 40.0 dB from stock and closer to "
+       "fp32 than stock (history 46); W7900D, hk 0.9.12: Wan2.1 832x480x81's biased projections "
+       "1.22-1.26x F.linear at the kernel, same error vs fp32; e2e eager, only the bias path toggled "
+       "in one process: 221.4 -> 211.4 s a video (1.047x), inside stock's run-to-run spread. "
+       "gfx1201: off -- kernel 1.08-1.12x F.linear under TunableOp at Qwen-Image 2.1's projections "
+       "on an R9700 (hk 0.9.18; 1.04-1.19x over the bench shapes), short of 1.15x",
        part="linear"),
     _R("sgld_convrot", "sglang_diffusion", "HK_SGLD_CONVROT", False, (),
        "ConvRot W8A8 linear for --quantization convrot_int8",
@@ -206,33 +208,39 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "naive reference kernel and the rest as an explicit im2col; and the VAE kept in NCDHW "
        "(SGLang's channels-last path costs MIOpen a layout copy every conv)",
        "the same conv per output frame (bit-identical where MIOpen picks a real solver for both); "
-       "Wan2.1-T2V-1.3B 832x480x81: VAE decode 969 s -> 37.8 s (a generation 2.77x), 36.2 dB from "
-       "stock and closer to an fp32 VAE decode than stock (36.9 dB vs 36.1); NCDHW: 211.9 -> 201.4 s a "
-       "video with every hk route on (1.052x, same process), inside stock's run-to-run spread; one conv2d: "
-       "convs 1.75-2.7x the 2-frame calls at the same error, 197.6 -> 187.3 s a video (1.055x). gfx1201: "
-       "MIOpen runs every channels-last VAE conv on its naive kernel, a 9-frame decode 2,680 s -> 4.1 s, "
-       "closer to an fp32 VAE decode than stock (38.60 dB vs 38.53)",
+       "W7900D, e2e eager vs stock eager (hk 0.9.11): Wan2.1-T2V-1.3B 832x480x81 VAE decode 969 s -> "
+       "37.8 s (a generation 2.77x), 36.2 dB from stock and closer to an fp32 VAE decode than stock "
+       "(36.9 dB vs 36.1); NCDHW (hk 0.9.13, only the layout toggled in one process, every hk route on): "
+       "211.9 -> 201.4 s a video (1.052x), inside stock's run-to-run spread; one conv2d (hk 0.9.14): "
+       "convs 1.75-2.7x the 2-frame calls at the same error (kernel), 197.6 -> 187.3 s a video (1.055x, "
+       "only VAE_CONV2D toggled). gfx1201 (R9700, hk 0.9.14, eager vs stock eager): MIOpen runs every "
+       "channels-last VAE conv on its naive kernel, a 9-frame decode 2,680 s -> 4.1 s, closer to an fp32 "
+       "VAE decode than stock (38.60 dB vs 38.53)",
        part="vaeconv"),
     _R("sgld_rope", "sglang_diffusion", "HK_SGLD_ROPE", True, ("gfx1100", "gfx1201"),
        "Qwen-Image 2.1's complex RoPE on hk.ops.rotary_pairs (bf16, head_dim 128, one sequence)",
        "bit-identical to the engine's on every call (rotary_pairs reproduces torch's complex "
-       "multiply); Qwen-Image 2.1 1024^2 30 steps: 28.88 -> 28.15 s a request (1.026x, same "
-       "process, ABBA x3). gfx1201 (one R9700, SGLang 0.5.23): 6.4x / 8.2x SGLang's apply_rope "
-       "per call at 4141 / 4096 tokens, bit-identical; on in a Qwen-Image 2.1 row with sgld_linear "
-       "(hk 23808 calls, engine 0; 1.16x an image against stock, 6 ABBA rounds)", part="rope"),
+       "multiply); W7900D, e2e eager, only this route toggled in one process (hk 0.9.11): Qwen-Image "
+       "2.1 1024^2 30 steps 28.88 -> 28.15 s a request (1.026x, ABBA x3). gfx1201 (one R9700, SGLang "
+       "0.5.23, hk 0.9.17): kernel 6.4x / 8.2x SGLang's apply_rope per call at 4141 / 4096 tokens, "
+       "bit-identical; in a Qwen-Image 2.1 run with sgld_linear forced on, eager vs stock eager with "
+       "TunableOp (hk 23808 calls, engine 0): 1.16x an image, 6 ABBA rounds; the 0.9.20 shared-box "
+       "row with the default gfx1201 routes only is '=' (ranges overlap)", part="rope"),
     _R("sgld_qknorm", "sglang_diffusion", "HK_SGLD_QKNORM", True, ("gfx1100",),
        "Qwen-Image 2.1's q / k RMSNorm and complex RoPE as one hk.ops.fused.rmsnorm_rotary_pairs "
        "launch (bf16, head_dim 128, one sequence)",
        "error vs fp64 equal to the engine's (91 of 17M elements differ by a bf16 unit, the mean's "
-       "sum order); Qwen-Image 2.1 1024^2 30 steps: 27.36 -> 26.22 s a request (1.044x, same "
-       "process, ABBA x3); 37.9 dB from stock, where torch's own norm with only its sum order "
-       "changed is 36.5 dB from stock", part="qknorm"),
+       "sum order); W7900D, e2e eager, only this route toggled in one process with sgld_rope on in "
+       "both arms (hk 0.9.12): Qwen-Image 2.1 1024^2 30 steps 27.36 -> 26.22 s a request (1.044x, "
+       "ABBA x3); 37.9 dB from stock, where torch's own norm with only its sum order changed is "
+       "36.5 dB from stock", part="qknorm"),
     _R("sgld_ditnorm", "sglang_diffusion", "HK_SGLD_DITNORM", True, ("gfx1100",),
        "the DiT block norms (Scale)ResidualLayerNormScaleShift / LayerNormScaleShift, unweighted, "
        "as one hk.ops.norm.layernorm_scale_shift launch a batch row",
-       "outputs in stock's dtypes, mean error vs fp64 equal to stock's; Wan2.1-T2V-1.3B 832x480x81 "
-       "20 steps: 201.9 -> 194.2 s a video (1.040x, same process, ABBA x2), inside stock's "
-       "run-to-run spread", part="ditnorm"),
+       "outputs in stock's dtypes, mean error vs fp64 equal to stock's; kernel 2.6 / 2.2 / 3.0 -> "
+       "0.36 / 0.89 / 0.59 ms a call at 1x32760x1536; W7900D, e2e eager, only this route toggled in "
+       "one process (hk 0.9.16): Wan2.1-T2V-1.3B 832x480x81 20 steps 197.9 -> 190.6 s a video "
+       "(1.038x, ABBA x2), inside stock's run-to-run spread", part="ditnorm"),
     _R("sgld_h3vae", "sglang_diffusion", "HK_SGLD_H3VAE", False, (),
        "MiniMax H3's VAE convs (BaseConv3d) on one frame -- an image edit's encoder -- as a conv2d "
        "with the last time tap: a causal zero-padded single frame touches no other tap",

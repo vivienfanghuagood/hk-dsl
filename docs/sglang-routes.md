@@ -63,6 +63,16 @@ HK_DISABLE=1 python my_generate.py                   # stock
 python3 -m hk.integration sglang-diffusion status
 ```
 
+**How to read the numbers in this section.** They are measured in **eager** mode,
+SGLang-Diffusion's default: through hk 0.9.20 the routes did not run under
+`--enable-torch-compile` (every request failed; fixed after #384). Unless a
+GPU is named they are from one W7900D. "x a video / a request" is end to end:
+either hk against stock, or -- where it says so -- one serving process with
+only that route toggled and every other hk route on in both arms (the
+baseline is then hk with the route off). Per-call numbers ("a call", "a
+conv") are kernel level at the model's shapes. The hk version and the
+evidence of each route are in [integration](integration.md#on-by-default-and-turning-it-off).
+
 SGLang-Diffusion (`sglang.multimodal_gen`) runs the DiT in worker processes
 and loads no plugins there. So `install` writes `hk_sgld.pth`, and the boot it
 imports, into site-packages. Unless `HK_DISABLE=1` or `HK_SGLD=0`, the boot
@@ -141,8 +151,9 @@ steer the work to a cheaper exact form:
   its one output frame is a conv2d of the frame with the last time tap: exact
   up to summation order, `kt` x fewer FLOPs, and MIOpen's conv2d instead of
   its conv3d's im2col. 1.99-7.35x a conv at the encoder's 14 shapes on a
-  W7900D (128 channels at 258^2 to 1024 at 18^2), about 2.2 s -> 0.6 s an
-  edit. More frames, replicate time padding or a pre-padded input keep the
+  W7900D (128 channels at 258^2 to 1024 at 18^2); weighted by an H3 edit's
+  profile that is about 2.2 s -> 0.6 s an edit (an estimate, not yet
+  measured end to end). More frames, replicate time padding or a pre-padded input keep the
   engine's. RDNA only: on gfx950 MIOpen's conv2d at these shapes has 1.6x
   the mean error of its conv3d, so the route leaves the engine's there.
 - **patchembed**: Qwen3-VL's vision patch embedding
