@@ -659,13 +659,103 @@ def judge_sgld_ditnorm(f: dict) -> List[str]:
             + _expect(f["chain"], f"{sd.DITNORM_HOME}'s scale-residual-norm chain changed"))
 
 
+def _module_or_none(home: str):
+    """The engine module `home`, or None where this engine has no such module (nothing to route).
+    A module that is there but fails to import is a broken contract, not an absent one."""
+    import importlib  # noqa: PLC0415
+
+    try:
+        return importlib.import_module(home)
+    except ModuleNotFoundError as e:
+        if e.name and (home == e.name or home.startswith(e.name + ".")):
+            return None
+        raise
+
+
+def _flat(src: str) -> str:
+    """Source without whitespace or trailing commas: the same code however it is wrapped."""
+    return "".join(src.split()).replace(",)", ")").replace(",]", "]")
+
+
+def gather_sgld_h3vae() -> Optional[dict]:
+    """MiniMax H3's BaseConv3d: the padding the route reproduces for a one-frame input (spatial in
+    pad_mode, kt - 1 causal zero frames in front) and the conv3d it then runs. None where this
+    SGLang has no H3 VAE."""
+    from . import sglang_diffusion as sd  # noqa: PLC0415
+
+    mod = _module_or_none(sd.H3VAE_HOME)
+    if mod is None:
+        return None
+    import torch  # noqa: PLC0415
+
+    cls = mod.BaseConv3d
+    init, tpad = _flat(inspect.getsource(cls.__init__)), _flat(inspect.getsource(cls._apply_temporal_padding))
+    pad, fwd = _flat(inspect.getsource(cls._apply_padding)), _flat(inspect.getsource(cls.forward))
+    return {"conv3d": issubclass(cls, torch.nn.Conv3d),
+            "forward": names(cls.forward),
+            "sets": all(f"self.{a}=" in init for a in ("pad_mode", "pad_mode_t", "causal")),
+            # one frame, zeros: kt - 1 zero frames in front
+            "one_frame_causal_zeros": "(0,0,0,0,self.kernel_size[0]-1,0)" in tpad
+                                      and 'mode="constant"' in tpad,
+            "spatial_pad": "(self.padding[2],self.padding[2],self.padding[1],self.padding[1],0,0)" in pad
+                           and "mode=self.pad_mode" in pad,
+            "conv": "F.conv3d(" in fwd and "stride=self.stride" in fwd and "padding=0" in fwd
+                    and "dilation=self.dilation" in fwd and "groups" not in fwd}
+
+
+def judge_sgld_h3vae(f: dict) -> List[str]:
+    from . import sglang_diffusion as sd  # noqa: PLC0415
+
+    where = f"{sd.H3VAE_HOME}.BaseConv3d"
+    return (_expect(f["conv3d"], f"{where} is no longer an nn.Conv3d")
+            + _expect(f["forward"] in (["self", "x"], ["self", "x", "pre_padded"]),
+                      f"{where}.forward takes {f['forward']}")
+            + _expect(f["sets"], f"{where} no longer sets pad_mode / pad_mode_t / causal")
+            + _expect(f["one_frame_causal_zeros"],
+                      f"{where} no longer pads one frame with kt - 1 zero frames in front")
+            + _expect(f["spatial_pad"], f"{where} pads space differently")
+            + _expect(f["conv"], f"{where}.forward no longer runs F.conv3d(stride, padding=0, dilation)"))
+
+
+def gather_sgld_patchembed() -> Optional[dict]:
+    """Qwen3-VL's vision patch embedding: a conv3d with kernel == stride over each
+    (C, T, P, P) patch, which the route runs as its GEMM. None where this SGLang has no
+    Qwen3-VL."""
+    from . import sglang_diffusion as sd  # noqa: PLC0415
+
+    mod = _module_or_none(sd.PATCHEMBED_HOME)
+    cls = getattr(mod, "Qwen3VLVisionPatchEmbed", None) if mod is not None else None
+    if cls is None:
+        return None
+    init, fwd = _flat(inspect.getsource(cls.__init__)), _flat(inspect.getsource(cls.forward))
+    return {"forward": names(cls.forward),
+            "sets": all(f"self.{a}=" in init for a in ("patch_size", "temporal_patch_size",
+                                                       "in_channels", "embed_dim", "proj")),
+            "kernel_is_stride": "stride=kernel_size" in init,
+            # each patch is (C, T, P, P), the weight's order after its out dim
+            "patch_order": "self.in_channels,self.temporal_patch_size,self.patch_size,self.patch_size" in fwd
+                           and ".view(-1,self.embed_dim)" in fwd}
+
+
+def judge_sgld_patchembed(f: dict) -> List[str]:
+    from . import sglang_diffusion as sd  # noqa: PLC0415
+
+    where = f"{sd.PATCHEMBED_HOME}.Qwen3VLVisionPatchEmbed"
+    return (_expect(f["forward"] == ["self", "hidden_states"], f"{where}.forward takes {f['forward']}")
+            + _expect(f["sets"], f"{where} no longer sets patch_size / temporal_patch_size / "
+                                 f"in_channels / embed_dim / proj")
+            + _expect(f["kernel_is_stride"], f"{where}'s proj no longer has stride == kernel_size")
+            + _expect(f["patch_order"], f"{where}.forward no longer views patches as (C, T, P, P)"))
+
+
 #: route -> (gather, judge). gather returns the route's facts, or None where it does not apply here.
 SPLIT: Dict[str, tuple] = {
     r: (globals()[f"gather_{r}"], globals()[f"judge_{r}"]) for r in (
         "vllm_mxfp8", "vllm_moe_a8w4", "vllm_int4", "vllm_gptq", "vllm_quark", "vllm_gemm", "vllm_moe",
         "vllm_moe_wna16", "vllm_sdpa", "vllm_backend", "vllm_dsv41_index", "vllm_sparse_mla",
         "vllm_prefill", "vllm_norm", "sglang_linear", "sglang_norm", "sglang_moe", "sgld_attn", "sgld_linear",
-        "sgld_convrot", "sgld_vaeconv", "sgld_rope", "sgld_qknorm", "sgld_ditnorm")}
+        "sgld_convrot", "sgld_vaeconv", "sgld_rope", "sgld_qknorm", "sgld_ditnorm", "sgld_h3vae",
+        "sgld_patchembed")}
 
 
 def _checker(name: str) -> Callable[[], Optional[List[str]]]:
