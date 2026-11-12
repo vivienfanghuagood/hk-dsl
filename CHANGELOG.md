@@ -6,6 +6,12 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+- hk's SDPA (every SGLang-Diffusion attention route) works under `torch.compile`: the kernel is one opaque
+  op there (`torch.ops.hk_sdpa.attention`, with a fake that gives the output's shape and layout). Traced
+  through, its launch broke the graph and its output's view could not be replayed -- with SGLang-Diffusion's
+  `--enable-torch-compile` every Qwen-Image 2.1 and Wan2.1 request failed (IndexError) -- and with dynamic
+  shapes the compiler failed inside the launcher. Eager calls are unchanged.
+
 - SGLang-Diffusion, opt-in (`HK_SGLD_H3VAE=1`, `HK_SGLD_PATCHEMBED=1`): MiniMax H3's image edit. The VAE
   encoder's convs on the reference image (one frame behind causal zero padding) run as a conv2d with the last
   time tap, 1.99-7.35x MIOpen's conv3d a conv on a W7900D; Qwen3-VL's vision patch embedding runs as the one

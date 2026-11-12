@@ -416,8 +416,10 @@ def attention(q, k, v):
     bnhd = is_bnhd(q, k, v)
     if bnhd:
         bp, hp = b, h
-        out = torch.empty((b, n, h, d), device=dev, dtype=torch.bfloat16)
-        ret = out.transpose(1, 2)
+        # the returned tensor is the base (an op's output must not be a view), (B, N, H, D) memory
+        ret = torch.empty_strided((b, h, n, d), (n * h * d, d, h * d, 1), device=dev,
+                                  dtype=torch.bfloat16)
+        out = ret.transpose(1, 2)
         qf, kf, vf = (t.transpose(1, 2).reshape(b, 1, t.shape[2], h * d) for t in (q, k, v))
         of = out.view(b, 1, n, h * d)
     else:
