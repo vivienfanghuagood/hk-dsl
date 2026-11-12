@@ -295,3 +295,42 @@ def test_a_bnhd_view_runs_in_place_and_matches_torch(h, h_kv, n, causal):
     assert sdpa.STATS["bnhd"] == before + 1
     assert not got.is_contiguous() and got.transpose(1, 2).is_contiguous()
     _close(got, _ref(q, k, v, is_causal=causal, enable_gqa=h != h_kv))
+
+
+@pytest.mark.parametrize("dynamic", [None, True], ids=["static", "dynamic"])
+@pytest.mark.parametrize("bnhd", [False, True], ids=["bhnd", "bnhd-views"])
+def test_it_compiles_as_one_op_and_matches_eager(bnhd, dynamic):
+    """Under torch.compile the kernel is one opaque op (torch.ops.hk_sdpa.attention) whose fake has
+    the output's shape and layout: traced through, its writes into views of a fresh output were
+    aliases AOT autograd could not replay, and every SGLang-Diffusion request with
+    --enable-torch-compile failed (IndexError in gen_alias_from_base); with dynamic shapes the
+    compiler traced into the launcher itself and failed on the stream lookup. A DiT-like block: the
+    projection's (B, N, H, D) output transposed in, the attention's output transposed back out."""
+    import torch._dynamo  # noqa: PLC0415
+
+    if bnhd and sdpa._attn._native_cdna():
+        pytest.skip("gfx1100 / gfx1201's bnhd kernel")
+    g = torch.Generator(device="cuda").manual_seed(7)
+    b, n, h, d = 1, 4160, 8, 128
+    xs = [torch.randn(b, n, h * d, device="cuda", dtype=torch.bfloat16, generator=g) for _ in range(3)]
+
+    def block(xq, xk, xv):
+        q, k, v = (t.view(b, n, h, d) for t in (xq, xk, xv))
+        if bnhd:
+            q, k, v = (t.transpose(1, 2) for t in (q, k, v))
+        else:
+            q, k, v = (t.transpose(1, 2).contiguous() for t in (q, k, v))
+        o = F.scaled_dot_product_attention(q, k, v)
+        return o.transpose(1, 2).reshape(b, n, h * d) * 2
+
+    sdpa.patch()
+    try:
+        torch._dynamo.reset()
+        want = block(*xs)
+        before = sdpa.STATS["kernel"]
+        got = torch.compile(block, dynamic=dynamic)(*xs)
+        assert sdpa.STATS["kernel"] > before                 # hk's kernel ran inside the graph
+        torch.testing.assert_close(got, want, rtol=0, atol=0)
+    finally:
+        sdpa.unpatch()
+        torch._dynamo.reset()
