@@ -1,5 +1,8 @@
 # The scorecard: the only performance numbers we quote
 
+> **To be re-verified (2026-11-12).** The numbers on this page are being checked again from first principles,
+> against a fair baseline. Until this note is removed, do not quote them.
+
 ## The rule
 
 A performance claim from this project quotes an end-to-end serving result
