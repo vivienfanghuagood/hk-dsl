@@ -41,7 +41,7 @@ python3 -m hk.integration --status
 ```
 routes (hk is on by default; HK_DISABLE=1 turns every route off, HK_<ROUTE>=0 one of them):
 ...
-vllm_int4         HK_VLLM_INT4         on   default on (gfx1201)
+vllm_int4         HK_VLLM_INT4         off  off by default on gfx1201: holds a second copy of the 4-bit weights ...
 vllm_gptq         HK_VLLM_GPTQ         on   default on (gfx1201)
 vllm_quark        HK_VLLM_QUARK        on   default on (gfx1201)
 vllm_gemm         HK_VLLM_GEMM         on   default on (gfx1201)
@@ -57,7 +57,7 @@ Once the server runs, its log has one `[hk]` line per vLLM process, naming
 the routes it applied, and for the linear layers how many took hk's kernel:
 
 ```
-[hk] vLLM routes on: vllm_int4 (default on (gfx1201)), vllm_gptq (default on (gfx1201)), vllm_gemm (default on (gfx1201)), vllm_moe (default on (gfx1201)), vllm_moe_wna16 (default on (gfx1201)), vllm_prefill (default on (gfx1201)); ...
+[hk] vLLM routes on: vllm_gptq (default on (gfx1201)), vllm_gemm (default on (gfx1201)), vllm_moe (default on (gfx1201)), vllm_moe_wna16 (default on (gfx1201)), vllm_prefill (default on (gfx1201)); ...
 [hk] linear layers at load: 145 layers through hk's op; unrouted at load: none
 ```
 

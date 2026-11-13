@@ -61,6 +61,10 @@ class Route:
     evidence: str
     #: For an SGLang-Diffusion part, its name in HK_SGLD's list.
     part: str = ""
+    #: (arch, why) pairs where the route is off by default although validated there: it costs
+    #: something its speed does not pay for (D-20261113-14: a second copy of 4-bit weights).
+    #: The route's switch (=1) still turns it on.
+    held_off: Tuple[Tuple[str, str], ...] = ()
 
 
 _R = Route
@@ -88,7 +92,8 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
     _R("vllm_int4", "vllm", "HK_VLLM_INT4", True, ("gfx1100", "gfx950", "gfx1201"),
        "AWQ 4-bit linear layers on hk's decode GEMM",
        "greedy tokens identical to stock's, Qwen3-8B/14B-AWQ (history 22, 42); gfx1201: "
-       "Qwen3-8B-AWQ tokens identical, counts equal round for round (history 50)"),
+       "Qwen3-8B-AWQ tokens identical, counts equal round for round (history 50)",
+       held_off=(("gfx1100", "holds a second copy of the 4-bit weights (~12 GB on a 27B model, taken from the KV cache)"), ("gfx950", "holds a second copy of the 4-bit weights (~12 GB on a 27B model, taken from the KV cache)"), ("gfx1201", "holds a second copy of the 4-bit weights (~12 GB on a 27B model, taken from the KV cache)"), )),
     _R("vllm_gptq", "vllm", "HK_VLLM_GPTQ", True, ("gfx1100", "gfx1201"),
        "4-bit symmetric GPTQ linear layers on RDNA3W4A16LinearKernel, on hk's decode GEMM at "
        "1-64 tokens; on gfx1201's RDNAHybridW4A16LinearKernel, the fp16 batches vLLM runs on "
@@ -100,7 +105,8 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "TPOT ahead at 8-16 concurrent requests and level at 1 (RDNA scorecard); gfx1201: "
        "Qwen3.8-27B-GPTQ-Int4 on one R9700 in the R9700 vLLM image (TRITON_ATTN), 3 alternating "
        "starts an arm: GSM8K-200 equal, TPOT ahead at 4 and 8 concurrent requests (disjoint), "
-       "level at 1 and for an 8k prompt"),
+       "level at 1 and for an 8k prompt",
+       held_off=(("gfx1100", "holds a second copy of the 4-bit weights (~12 GB on a 27B model, taken from the KV cache)"), )),
     _R("vllm_quark", "vllm", "HK_VLLM_QUARK", True, ("gfx1100", "gfx1201"),
        "AMD Quark W4A16 (int4, symmetric) linear layers: on gfx1201's RDNAHybridW4A16LinearKernel "
        "the fp16 batches vLLM runs on Triton on hk's 4-bit forms in place (decode to 64 tokens, "
@@ -111,7 +117,8 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "TRITON_ATTN): TPOT at 8 concurrent requests 1.64x, TTFT at 512 / 2048 tokens 1.16x / 1.17x "
        "(disjoint), level at 1 and 4; kernel 1.9-3.6x vLLM at 6-32 tokens, 1.13-1.30x at 128-4096, "
        "1.05-1.20x at 64. gfx1100 (one W7900D, MiniCPM-V vLLM image): TPOT 1.13x / 1.18x / 1.25x "
-       "at 1 / 4 / 8 concurrent requests (disjoint), TTFT level (prefill stays vLLM's there)"),
+       "at 1 / 4 / 8 concurrent requests (disjoint), TTFT level (prefill stays vLLM's there)",
+       held_off=(("gfx1100", "holds a second copy of the 4-bit weights (~12 GB on a 27B model, taken from the KV cache)"), )),
     _R("vllm_norm", "vllm", "HK_VLLM_NORM", True, ("gfx1100", "gfx1201"),
        "vLLM's GemmaRMSNorm (Gemma, the Qwen3.5 family, MiniCPM-V-4.7's text models) on hk's "
        "fused (add+)RMSNorm at weight offset 1, where vLLM runs it as PyTorch ops: the eager calls; "
@@ -318,6 +325,9 @@ def decide(name: str, env: Optional[Mapping[str, str]] = None,
     if not r.default:
         return Decision(False, "default off")
     here = arch() if gpu == "detect" else gpu
+    held = dict(r.held_off).get(here or "")
+    if held:
+        return Decision(False, f"off by default on {here}: {held}; {r.env}=1 turns it on")
     if here in r.arches:
         return Decision(True, f"default on ({here})")
     return Decision(False, f"default off on {here or 'no GPU'} (validated on "

@@ -73,3 +73,12 @@ def test_the_startup_summary_says_what_runs_and_how_to_turn_it_off(monkeypatch, 
     off = next(x for x in out if x.startswith("[hk] turn hk off: HK_DISABLE=1"))
     for n in on:
         assert f"{switches.ROUTES[n].env}=0" in off
+
+
+
+def test_the_summary_lists_the_routes_held_off_with_their_reason():
+    lines = support.summary("vLLM", "0.0", {"arch": "gfx1100"}, ["vllm_gemm"], [], {"vllm_gemm": "HK_VLLM_GEMM"}, 1,
+                            [("vllm_int4", "off by default on gfx1100: holds a second copy of the 4-bit weights "
+                                           "(~12 GB on a 27B model, taken from the KV cache); HK_VLLM_INT4=1 turns it on")])
+    held = [x for x in lines if x.startswith("[hk] off by default here: ")]
+    assert len(held) == 1 and "vllm_int4 (" in held[0] and "second copy" in held[0] and "HK_VLLM_INT4=1" in held[0]

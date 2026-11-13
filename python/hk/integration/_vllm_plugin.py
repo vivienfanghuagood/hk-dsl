@@ -206,8 +206,11 @@ def register() -> None:
     left = f"; OFF: {', '.join(off)}" if off else ""
     from .. import __version__  # noqa: PLC0415
 
-    head, _, tail = support.summary("vLLM", __version__, seen, [n for n in routes if n in applied],
-                                    list(off), {n: switches.ROUTES[n].env for n in routes}, pid)
+    held = [(r.name, d.why) for r in switches.routes("vllm")
+            for d in [switches.decide(r.name)] if not d.on and d.why.startswith("off by default on")]
+    head, _, *tail = support.summary("vLLM", __version__, seen, [n for n in routes if n in applied],
+                                     list(off), {n: switches.ROUTES[n].env for n in routes}, pid, held)
     print(head, flush=True)
     print(f"[hk] vLLM routes on: {on}{left}; {'; '.join(notes)} (pid {pid})", flush=True)
-    print(tail, flush=True)
+    for line in tail:
+        print(line, flush=True)
