@@ -107,6 +107,12 @@ jobs:
           fi
           python3 scripts/check_public_hygiene.py "${args[@]}"
 
+      # Markdown GitHub renders broken: a table whose delimiter or rows have another cell count
+      # than its header (the whole table falls back to text), and relative links to missing files.
+      - name: Docs render check
+        if: matrix.shard == 'ir' && matrix.arch == 'gfx1100'
+        run: python3 scripts/check_docs.py
+
       - name: MLIR 23.1.3, prebuilt
         env:
           GH_TOKEN: ${{ github.token }}

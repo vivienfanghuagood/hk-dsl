@@ -42,7 +42,7 @@ hk-dsl 0.9.16. Engine: TP2, max_model_len 16640, no prefix caching. Execution mo
   decode kernel, not AITER's.
 
 | metric | tuned stock | hk + tuned | hk, sparse-MLA route | hk + tuned vs tuned stock | sparse-MLA route vs tuned stock |
-|---|---|---|---|---|---|---|
+|---|---|---|---|---|---|
 | prefill 8k tokens, tok/s | 69,371 (69,286-69,455) | 72,626 (72,605-72,647) | 74,293 (74,180-74,406) | **+4.7%** | **+7.1%** |
 | prefill 8k, TTFT mean (ms) | 883.3 (882.0-884.6) | 843.7 (843.4-844.0) | 824.6 (823.2-826.0) | **-4.5%** | **-6.6%** |
 | long (8k in / 128 out, 8 concurrent), req/s | 3.628 (3.622-3.634) | 3.729 (3.724-3.734) | 3.736 (3.721-3.752) | **+2.8%** | **+3.0%** |
