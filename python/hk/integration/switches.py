@@ -95,18 +95,19 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "Qwen3-8B-AWQ tokens identical, counts equal round for round (history 50)",
        held_off=(("gfx1100", "holds a second copy of the 4-bit weights (~12 GB on a 27B model, taken from the KV cache)"), ("gfx950", "holds a second copy of the 4-bit weights (~12 GB on a 27B model, taken from the KV cache)"), ("gfx1201", "holds a second copy of the 4-bit weights (~12 GB on a 27B model, taken from the KV cache)"), )),
     _R("vllm_gptq", "vllm", "HK_VLLM_GPTQ", True, ("gfx1100", "gfx1201"),
-       "4-bit symmetric GPTQ linear layers on RDNA3W4A16LinearKernel, on hk's decode GEMM at "
-       "1-64 tokens; on gfx1201's RDNAHybridW4A16LinearKernel, the fp16 batches vLLM runs on "
-       "Triton on hk's 4-bit forms (decode to 64 tokens, the large-batch form above: "
-       "prefill), reading vLLM's tensors in place; "
-       "act-order checkpoints refused",
-       "gfx1100: Qwen3.8-27B-GPTQ-Int4 in the Radeon TheRock vLLM image against stock-fair "
-       "(TRITON_ATTN, TunableOp with a 256 MB rotating buffer), 3 starts an arm: GSM8K-200 equal, "
-       "TPOT ahead at 8-16 concurrent requests and level at 1 (RDNA scorecard); gfx1201: "
+       "4-bit symmetric GPTQ linear layers. gfx1100 (RDNA3W4A16LinearKernel): repacked once at load "
+       "into vLLM's RDNA skinny layout, vLLM's copy freed (one copy, KV as stock's), every batch on "
+       "hk's forms (small-batch to 32-64 tokens by shape, the large-batch form above); gfx1201 "
+       "(RDNAHybridW4A16LinearKernel): the fp16 batches vLLM runs on Triton on hk's forms, reading "
+       "vLLM's tensors in place; act-order checkpoints refused",
+       "gfx1100: Qwen3.8-27B-GPTQ-Int4 on one W7900D, vLLM 0.33.0, against the best stock "
+       "configuration (ROCM_SEGMENTED_ATTN + offline TunableOp), 2 alternating starts an arm, twice: "
+       "KV tokens equal (288k), TPOT 1.13-1.16x at 1 / 4 / 8 concurrent, TTFT 1.16x at 32k and "
+       "1.18x at 8k (warm), real-mix c4 output 1.21x (1.13x of it this route: hk with HK_VLLM_GPTQ=0 "
+       "-> 1 on one backend), GSM8K-200 equal; gfx1201: "
        "Qwen3.8-27B-GPTQ-Int4 on one R9700 in the R9700 vLLM image (TRITON_ATTN), 3 alternating "
        "starts an arm: GSM8K-200 equal, TPOT ahead at 4 and 8 concurrent requests (disjoint), "
-       "level at 1 and for an 8k prompt",
-       held_off=(("gfx1100", "holds a second copy of the 4-bit weights (~12 GB on a 27B model, taken from the KV cache)"), )),
+       "level at 1 and for an 8k prompt"),
     _R("vllm_quark", "vllm", "HK_VLLM_QUARK", True, ("gfx1100", "gfx1201"),
        "AMD Quark W4A16 (int4, symmetric) linear layers: on gfx1201's RDNAHybridW4A16LinearKernel "
        "the fp16 batches vLLM runs on Triton on hk's 4-bit forms in place (decode to 64 tokens, "

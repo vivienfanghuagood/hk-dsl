@@ -29,7 +29,7 @@ COVERAGE = {
     ("vllm_int4", "gfx950"):
         "test_route_paths.py::test_vllm_int4_takes_up_to_this_archs_limit_and_leaves_the_rest",
     ("vllm_gptq", "gfx1100"):
-        "test_route_paths.py::test_vllm_gptq_takes_min_m_to_64_and_leaves_the_rest",
+        "test_route_paths.py::test_vllm_gptq_gfx1100_holds_one_skinny_copy_and_serves_every_batch",
     ("vllm_gptq", "gfx1201"):
         "test_route_paths.py::test_vllm_gptq_hybrid_takes_every_batch_vllm_sends_to_triton_in_place",
     ("vllm_norm", "gfx1100"):
