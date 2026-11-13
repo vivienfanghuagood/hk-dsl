@@ -2,6 +2,8 @@
 # scripts/scorecard/minicpmv-35b.sh -- the scorecard's MiniCPM-V-4.7-35B-A3B scenario, end to end, in one command.
 #
 #   IMAGE=<a vLLM ROCm image> GPUS=0,1 bash scripts/scorecard/minicpmv-35b.sh [OUT_DIR]
+#   RUNNER=local GPUS=0,1 bash scripts/scorecard/minicpmv-35b.sh [OUT_DIR]   # inside a container of the image,
+#       with hk-dsl installed: the stock arm then runs with HK_DISABLE=1 (hk loads nothing, the engine is stock)
 #
 # What it does: on two GPUs (tensor parallel 2), it starts vLLM in two arms, alternating, START_PER_ARM starts
 # each (default 2):
@@ -19,7 +21,10 @@
 # The scorecard's numbers came from the production serving image (not public); with another vLLM build the
 # numbers move with it -- quote the image with any number this prints.
 set -euo pipefail
-IMAGE=${IMAGE:?set IMAGE to a vLLM ROCm image}
+RUNNER=${RUNNER:-docker}
+[ "$RUNNER" = local ] || IMAGE=${IMAGE:?set IMAGE to a vLLM ROCm image}
+IMAGE=${IMAGE:-local}
+SEED=${SEED:-20261113}
 GPUS=${GPUS:-0,1}
 MODEL=${MODEL:-openbmb/MiniCPM-V-4.7-35B-A3B}
 MODEL_PATH=${MODEL_PATH:-}
@@ -46,23 +51,41 @@ start() {   # start <arm> <n>: one server, in the background; waits until it ser
                -e PYTORCH_TUNABLEOP_FILENAME=/tunableop/tunableop_results%d.csv)
     local pre="true"
     [ "$arm" = hk ] && pre="pip install -q hk-dsl==$HK_VERSION" || env+=(-e HK_DISABLE=1)
+    if [ "$RUNNER" = local ]; then
+        local e=(); for x in "${env[@]}"; do [ "$x" != -e ] && e+=("${x/\/tunableop\//$TUNABLEOP_DIR/}"); done
+        [ "$arm" = stock ] || e=("${e[@]/HK_DISABLE=1/}")
+        ( for kv in "${e[@]}"; do [ -n "$kv" ] && export "${kv/HF_HOME=\/hf/HF_HOME=${HF_HOME:-$HOME/.cache/huggingface}}"; done
+          exec setsid vllm serve "$MODEL" "${ARGS[@]}" ) > "$OUT/server-$arm-$n.log" 2>&1 &
+        echo $! > "$OUT/server-$arm-$n.pid"
+    else
     docker run -d --rm --name "$name" --network host --ipc host --ulimit core=0 --device /dev/kfd --device /dev/dri \
         --group-add video --security-opt seccomp=unconfined "${env[@]}" "${MOUNTS[@]}" --entrypoint bash "$IMAGE" \
         -c "$pre && exec vllm serve $MODEL ${ARGS[*]}" > /dev/null
+    fi
     for _ in $(seq 1 180); do
         sleep 10
         curl -sf "localhost:$PORT/v1/models" > /dev/null && { log "$arm start $n: serving"; return 0; }
-        docker inspect "$name" > /dev/null 2>&1 || { log "$arm start $n: the server exited"; return 1; }
+        if [ "$RUNNER" = local ]; then kill -0 "$(cat "$OUT/server-$arm-$n.pid")" 2>/dev/null \
+            || { log "$arm start $n: the server exited"; return 1; }
+        else docker inspect "$name" > /dev/null 2>&1 || { log "$arm start $n: the server exited"; return 1; }; fi
     done
     log "$arm start $n: not serving after 30 min"; return 1
 }
-stop() { docker stop -t 60 "sc35b-$1-$2" > /dev/null 2>&1 || true; sleep 10; }
+stop() {
+    if [ "$RUNNER" = local ]; then
+        local p; p=$(cat "$OUT/server-$1-$2.pid" 2>/dev/null) || return 0
+        kill -INT -- -"$p" 2>/dev/null; for _ in $(seq 1 60); do kill -0 "$p" 2>/dev/null || break; sleep 1; done
+        kill -KILL -- -"$p" 2>/dev/null || true
+    else docker stop -t 60 "sc35b-$1-$2" > /dev/null 2>&1 || true; fi
+    sleep 10
+}
+in_image() { if [ "$RUNNER" = local ]; then bash -c "$1"; else docker run --rm --network host -v "$OUT:/out" --entrypoint bash "$IMAGE" -c "$1"; fi; }
 
-ttft() {    # ttft <tokens>: seconds to the first token of one uncached synthetic prompt of about <tokens> tokens
-    python3 - "$1" "$PORT" <<'PY'
+ttft() {    # ttft <tokens> <seed>: seconds to the first token of one uncached synthetic prompt of about <tokens> tokens
+    python3 - "$1" "$PORT" "$2" <<'PY'
 import json, sys, time, urllib.request, random
-n, port = int(sys.argv[1]), sys.argv[2]
-random.seed(time.time_ns())                       # uncached: a prompt no earlier request shares a prefix with
+n, port, seed = int(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+random.seed(seed)                                 # a fresh server, and a seed per prompt: no shared prefix
 words = " ".join(f"w{random.randrange(10**6)}" for _ in range(n // 2))
 body = json.dumps({"model": "MiniCPM-V-4.7-35B-A3B", "prompt": words, "max_tokens": 1, "stream": True}).encode()
 req = urllib.request.Request(f"http://localhost:{port}/v1/completions", body, {"Content-Type": "application/json"})
@@ -74,15 +97,16 @@ with urllib.request.urlopen(req, timeout=1800) as r:
 PY
 }
 
-tpot() {    # tpot <concurrency>: mean time per output token (ms), vllm bench serve on random prompts
-    docker run --rm --network host --entrypoint bash "$IMAGE" -c \
-        "vllm bench serve --backend vllm --model $MODEL --served-model-name MiniCPM-V-4.7-35B-A3B --port $PORT \
+tpot() {    # tpot <concurrency> <tag>: mean time per output token (ms) of vllm bench serve on seeded random
+            # prompts (4096 in, 256 out, 16 requests per stream); its full output is kept in OUT/bench-<tag>.txt
+    in_image "vllm bench serve --backend vllm --model $MODEL --served-model-name MiniCPM-V-4.7-35B-A3B --port $PORT \
          --dataset-name random --random-input-len 4096 --random-output-len 256 --num-prompts $(( $1 * 16 )) \
-         --max-concurrency $1 --percentile-metrics tpot 2>/dev/null" | awk '/Mean TPOT/ {print $NF}'
+         --max-concurrency $1 --seed $SEED --percentile-metrics tpot,ttft 2>&1" > "$OUT/bench-$2.txt"
+    awk '/Mean TPOT/ {t=$NF} /Successful requests/ {o=$NF} /Failed requests/ {f=$NF} END {print t" ok="o" failed="(f==""?0:f)}' "$OUT/bench-$2.txt"
 }
 
 gsm8k() {   # GSM8K-200, greedy, through the server; prints the accuracy in %
-    docker run --rm --network host -v "$OUT:/out" --entrypoint bash "$IMAGE" -c "python3 - $PORT" <<'PY'
+    in_image "python3 - $PORT" <<'PY'
 import json, re, sys, urllib.request
 from datasets import load_dataset
 port = sys.argv[1]
@@ -105,10 +129,10 @@ for n in $(seq 1 "$STARTS"); do
     for arm in stock hk; do                          # alternating: stock, hk, stock, hk
         start "$arm" "$n" || { stop "$arm" "$n"; continue; }
         r="$OUT/$arm-$n"
-        echo "ttft32k=$(ttft 32768)" > "$r"
-        echo "ttft128k=$(ttft 131072)" >> "$r"
-        echo "tpot_c1=$(tpot 1)" >> "$r"
-        echo "tpot_c8=$(tpot 8)" >> "$r"
+        echo "ttft32k=$(ttft 32768 $((SEED + 10 * n + 1)))" > "$r"
+        echo "ttft128k=$(ttft 131072 $((SEED + 10 * n + 2)))" >> "$r"
+        read -r t c <<< "$(tpot 1 "$arm-$n-c1")"; echo "tpot_c1=$t" >> "$r"; echo "count_c1=$c" >> "$r"
+        read -r t c <<< "$(tpot 8 "$arm-$n-c8")"; echo "tpot_c8=$t" >> "$r"; echo "count_c8=$c" >> "$r"
         [ "$n" = 1 ] && echo "gsm8k=$(gsm8k)" >> "$r"
         log "$arm start $n: $(tr '\n' ' ' < "$r")"
         stop "$arm" "$n"
