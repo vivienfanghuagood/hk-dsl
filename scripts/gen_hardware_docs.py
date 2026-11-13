@@ -119,7 +119,7 @@ def page() -> str:
         else:
             status = ("**compile-only**: no part was available, so its numbers are modelled "
                       "from the compiler. CI builds kernels for it; none has run on one")
-        on = [r for r in routes if r.default and a in r.arches]
+        on = [r for r in routes if _on(r, a)]
         if on:
             by: Dict[str, int] = {}
             for r in on:
@@ -168,12 +168,24 @@ def page() -> str:
                + "|---" * len(archs) + "|\n")
     for r in routes:
         if r.default:
-            cells = ["**on**" if a in r.arches else "off" for a in archs]
+            cells = ["**on**" if _on(r, a) else ("off (2nd weight copy)" if a in dict(r.held_off) else "off")
+                     for a in archs]
         else:
             cells = ["opt-in"] * len(archs)
         out.append(f"| `{r.name}` | {ENGINES[r.engine]} | `{r.env}` | " + " | ".join(cells)
                    + " |\n")
+    held = [r for r in routes if r.held_off]
+    if held:
+        out.append("\n**Off by default for a second weight copy.** "
+                   + "; ".join(f"`{r.name}` on {', '.join(a for a, _ in r.held_off)}" for r in held)
+                   + ": " + held[0].held_off[0][1] + ". Each switch at `1` turns its route on; the "
+                   "startup log lists them. They come back on when they read vLLM's weights in place.\n")
     return "".join(out)
+
+
+def _on(r, a) -> bool:
+    """On by default on arch a: validated there, and not held off (switches.Route.held_off)."""
+    return r.default and a in r.arches and a not in dict(r.held_off)
 
 
 def load_catalog():
@@ -218,7 +230,7 @@ def ops_page() -> str:
         routes = []
         for r in f["routes"]:
             rt = switches.ROUTES[r]
-            on = ", ".join(a for a in archs if rt.default and a in rt.arches)
+            on = ", ".join(a for a in archs if _on(rt, a))
             routes.append(f"`{r}` ({'on: ' + on if on else 'opt-in' if not rt.default else 'off'})")
         what = f["what"] + (f"; {f['note']}" if f.get("note") else "")
         tests = ", ".join(f"`{t}`" for t in f["tests"])
@@ -250,7 +262,7 @@ def compact(link: str) -> str:
     for a in [a for a in ARCH_ORDER if a in target.TARGETS]:
         t, m = target.TARGETS[a], mods[a]
         level = ("tested" if a in ci else "measured") if t.verified else "compile-only"
-        n = sum(1 for r in switches.ROUTES.values() if r.default and a in r.arches)
+        n = sum(1 for r in switches.ROUTES.values() if _on(r, a))
         rows.append(f"| {', '.join(m.PARTS)} | {a} ({t.gpu_target}) | {level} | "
                     f"[{n or 'none'}]({link}#engine-routes-on-each) |")
     rows.append("")

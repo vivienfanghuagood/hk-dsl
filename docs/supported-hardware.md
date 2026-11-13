@@ -8,10 +8,10 @@ hk-dsl builds kernels for four GPU architectures. This page is generated from th
 
 | GPU | arch | status | engine routes on by default |
 |---|---|---|---|
-| Radeon PRO W7900, Radeon PRO W7900D, Radeon RX 7900 | gfx1100 (RDNA3) | **runs**: measured on Radeon PRO W7900D; CI's GPU tier runs on one | 19: vLLM 9, SGLang 3, SGLang-Diffusion 6, `hk.ops` 1 |
-| Radeon AI PRO R9700, Radeon RX 9070 | gfx1201 (RDNA4) | **runs**: measured on Radeon AI PRO R9700; CI's GPU tier runs on one | 11: vLLM 8, SGLang-Diffusion 3 |
+| Radeon PRO W7900, Radeon PRO W7900D, Radeon RX 7900 | gfx1100 (RDNA3) | **runs**: measured on Radeon PRO W7900D; CI's GPU tier runs on one | 16: vLLM 6, SGLang 3, SGLang-Diffusion 6, `hk.ops` 1 |
+| Radeon AI PRO R9700, Radeon RX 9070 | gfx1201 (RDNA4) | **runs**: measured on Radeon AI PRO R9700; CI's GPU tier runs on one | 10: vLLM 7, SGLang-Diffusion 3 |
 | Instinct MI300X, Instinct MI325X | gfx942 (CDNA3) | **compile-only**: no part was available, so its numbers are modelled from the compiler. CI builds kernels for it; none has run on one | none |
-| Instinct MI355X, Instinct MI350X | gfx950 (CDNA4) | **runs**: measured on Instinct MI355X; CI's GPU tier runs on one | 5: vLLM 5 |
+| Instinct MI355X, Instinct MI350X | gfx950 (CDNA4) | **runs**: measured on Instinct MI355X; CI's GPU tier runs on one | 4: vLLM 4 |
 
 Other GPUs are not supported, other RDNA3 parts (gfx1101, gfx1102) included. On one, `hk.target.current_arch()` builds for gfx1100, and every engine route is off by default. `HK_ARCH` names the arch to build for, as a gfx name or as one of `CDNA3`, `CDNA4`, `RDNA3`, `RDNA4`, `gfx11`, `gfx12`.
 
@@ -37,9 +37,9 @@ A route is on by default only on the GPUs where it met the [default-on rule](tes
 | `vllm_moe_a8w4` | vLLM | `HK_VLLM_MOE_A8W4` | off | off | off | **on** |
 | `vllm_dsv41_index` | vLLM | `HK_VLLM_DSV41_INDEX` | off | off | off | **on** |
 | `vllm_sparse_mla` | vLLM | `HK_VLLM_SPARSE_MLA` | off | off | off | **on** |
-| `vllm_int4` | vLLM | `HK_VLLM_INT4` | **on** | **on** | off | **on** |
-| `vllm_gptq` | vLLM | `HK_VLLM_GPTQ` | **on** | **on** | off | off |
-| `vllm_quark` | vLLM | `HK_VLLM_QUARK` | **on** | **on** | off | off |
+| `vllm_int4` | vLLM | `HK_VLLM_INT4` | off (2nd weight copy) | off (2nd weight copy) | off | off (2nd weight copy) |
+| `vllm_gptq` | vLLM | `HK_VLLM_GPTQ` | off (2nd weight copy) | **on** | off | off |
+| `vllm_quark` | vLLM | `HK_VLLM_QUARK` | off (2nd weight copy) | **on** | off | off |
 | `vllm_norm` | vLLM | `HK_VLLM_NORM` | **on** | **on** | off | off |
 | `vllm_gemm` | vLLM | `HK_VLLM_GEMM` | **on** | **on** | off | off |
 | `vllm_moe` | vLLM | `HK_VLLM_MOE` | **on** | **on** | off | off |
@@ -60,3 +60,5 @@ A route is on by default only on the GPUs where it met the [default-on rule](tes
 | `sgld_h3vae` | SGLang-Diffusion | `HK_SGLD_H3VAE` | opt-in | opt-in | opt-in | opt-in |
 | `sgld_patchembed` | SGLang-Diffusion | `HK_SGLD_PATCHEMBED` | opt-in | opt-in | opt-in | opt-in |
 | `sdpa_k3` | `hk.ops` | `HK_SDPA_K3` | **on** | off | off | off |
+
+**Off by default for a second weight copy.** `vllm_int4` on gfx1100, gfx950, gfx1201; `vllm_gptq` on gfx1100; `vllm_quark` on gfx1100: holds a second copy of the 4-bit weights (~12 GB on a 27B model, taken from the KV cache). Each switch at `1` turns its route on; the startup log lists them. They come back on when they read vLLM's weights in place.

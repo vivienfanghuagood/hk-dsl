@@ -144,10 +144,10 @@ first compile in each process prints one line:
 | linear layers | `vllm_gemm.py` | `dispatch_unquantized_gemm`, rebound by identity | `HK_VLLM_GEMM` (on, gfx1100 and gfx1201) |
 | MoE GEMMs | `vllm_moe.py` | `invoke_fused_moe_triton_kernel` and `try_get_optimal_moe_config`, rebound by identity | `HK_VLLM_MOE` (on, gfx1100 and gfx1201) |
 | 4-bit MoE GEMMs (moe_wna16) | `vllm_moe_wna16.py` | `invoke_fused_moe_wna16_triton_kernel` and `try_get_optimal_moe_config`, rebound by identity | `HK_VLLM_MOE_WNA16` (on, gfx1100 and gfx1201) |
-| AWQ linear layers | `vllm_int4.py` | `AutoAWQLinearMethod.process_weights_after_loading` and `.apply` | `HK_VLLM_INT4` (on) |
-| GPTQ linear layers | `vllm_gptq.py` | `AutoGPTQLinearMethod.process_weights_after_loading` and `.apply` | `HK_VLLM_GPTQ` (on, gfx1100 and gfx1201) |
+| AWQ linear layers | `vllm_int4.py` | `AutoAWQLinearMethod.process_weights_after_loading` and `.apply` | `HK_VLLM_INT4` (off by default: a second weight copy) |
+| GPTQ linear layers | `vllm_gptq.py` | `AutoGPTQLinearMethod.process_weights_after_loading` and `.apply` | `HK_VLLM_GPTQ` (on, gfx1201; off by default on gfx1100: a second weight copy) |
 | Gemma-style RMSNorm | `vllm_norm.py` | `GemmaRMSNorm.forward_cuda` | `HK_VLLM_NORM` (on, gfx1100 and gfx1201) |
-| Quark W4A16 linear layers | `vllm_quark.py` | `QuarkW4A16Int4.process_weights_after_loading` and `.apply_weights` | `HK_VLLM_QUARK` (on, gfx1100 and gfx1201) |
+| Quark W4A16 linear layers | `vllm_quark.py` | `QuarkW4A16Int4.process_weights_after_loading` and `.apply_weights` | `HK_VLLM_QUARK` (on, gfx1201; off by default on gfx1100: a second weight copy) |
 | MXFP8 linear layers | `vllm_mxfp8.py` | `RocmDotScaledMxfp8LinearKernel.process_weights_after_loading` and `.apply_weights` | `HK_VLLM_MXFP8` (on, gfx950) |
 | MXFP4 MoE, a8w4 | `vllm_moe_a8w4.py` | `aiter.fused_moe.fused_moe`, with its signature | `HK_VLLM_MOE_A8W4` (on, gfx950) |
 | DeepSeek-V4.1 index layers, `--monokernel` | `vllm_dsv41_index.py` | `mono_decode._select`, through an import hook | `HK_VLLM_DSV41_INDEX` (on, gfx950) |

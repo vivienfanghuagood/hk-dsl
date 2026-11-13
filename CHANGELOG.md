@@ -6,6 +6,12 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+**Off by default: the 4-bit linear routes that keep a second weight copy** (D-20261113-14). `vllm_int4`
+(AWQ, every GPU), `vllm_gptq` and `vllm_quark` on gfx1100 kept a second copy of the 4-bit weights beside
+vLLM's (for the batches they hand back to vLLM's kernel), which took ~12 GB of KV cache on a 27B model.
+They are off by default until they read vLLM's weights in place; their switches at `1` turn them on, and
+vLLM's startup log lists them with the reason. On gfx1201 GPTQ and Quark read in place and stay on.
+
 ## 0.9.21
 
 hk-dsl 0.9.21: `pip install hk-dsl && vllm serve` on an RDNA image no longer pulls aiter into the engine
