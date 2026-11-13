@@ -131,6 +131,16 @@ SKINNY_ARCHES = ("gfx1100",)
 SKINNY_MAX_M = 64
 
 
+def skinny_max_m(n: int, k: int) -> int:
+    """Where a skinny layer hands from the small-batch form to the large-batch one, by shape (W7900D,
+    Qwen3.8-27B-GPTQ, against vLLM's gptq_gemm_rdna3): the wide layers (N >= 12288: qkv, gate_up) are
+    faster on the large form from 48 tokens, the small o / out projections (N x K <= 5120 x 6144)
+    stay on the small form to 64, the rest hand over above 48."""
+    if n >= 12288:
+        return 32
+    return SKINNY_MAX_M if n * k <= 5120 * 6144 else 48
+
+
 def _fake_skinny(x, w_q, w_s, group):
     return x.new_empty((x.shape[0], w_q.shape[0]))
 
@@ -154,7 +164,7 @@ def gptq_w4a16_skinny(x, w_q, w_s, group: int):
         SKINNY.count("cast")
         x = x.to(torch.float16)
     x = x if x.is_contiguous() else x.contiguous()
-    if x.shape[0] <= SKINNY_MAX_M:
+    if x.shape[0] <= skinny_max_m(w_q.shape[0], w_q.shape[1] * 8):
         if dtype == torch.float16:
             SKINNY.count("hk")
         out = hk_w4.exllama_matmul(x, w_q, w_s, group)

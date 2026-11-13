@@ -295,7 +295,7 @@ def test_vllm_gptq_gfx1100_holds_one_skinny_copy_and_serves_every_batch(monkeypa
         x = torch.randn(m, k, device="cuda", dtype=torch.float16, generator=g) * 0.1
         before = dict(vllm_gptq.SKINNY.stats)
         y = vllm_gptq.apply(method, layer, x)
-        path = "hk" if m <= vllm_gptq.SKINNY_MAX_M else "hk_large"
+        path = "hk" if m <= vllm_gptq.skinny_max_m(n, k) else "hk_large"
         assert vllm_gptq.SKINNY.stats[path] == before.get(path, 0) + 1 and y.shape == (m, n)
         _close(y, (x.double() @ w.t()).float())
     xb = torch.randn(4, k, device="cuda", dtype=torch.bfloat16, generator=g) * 0.1
