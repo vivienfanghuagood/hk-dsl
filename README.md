@@ -26,6 +26,10 @@ pip install hk-dsl && python3 -m sglang.launch_server --model-path Qwen/Qwen3-8B
     --attention-backend triton --disable-cuda-graph                 # SGLang (W7900 / RX 7900)
 ```
 
+**On Radeon Cloud,** pick the **vLLM · Stable** image (vLLM 0.33, ROCm 7.2), then run the line above. The
+**Base** image's vLLM (0.16) is older than hk supports: there hk says so in one line and stays off, and vLLM
+runs as stock. There is no SGLang image to pick yet.
+
 At startup the vLLM log shows hk's summary per process: hk's version and the stack it found, a
 `[hk] vLLM routes on: ...` line, and the switches that turn hk or one route off (SGLang prints
 `[hk] SGLang routes on: ...`). On an engine or GPU hk does not support (below), it prints one
