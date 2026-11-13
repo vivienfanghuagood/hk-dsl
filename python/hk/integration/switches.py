@@ -103,7 +103,8 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "gfx1100: Qwen3.8-27B-GPTQ-Int4 on one W7900D, vLLM 0.33.0, against the best stock "
        "configuration (ROCM_SEGMENTED_ATTN + offline TunableOp), 2 alternating starts an arm, twice: "
        "KV tokens equal (288k), TPOT 1.13-1.16x at 1 / 4 / 8 concurrent, TTFT 1.16x at 32k and "
-       "1.18x at 8k (warm), real-mix c4 output 1.21x, GSM8K-200 equal; gfx1201: "
+       "1.18x at 8k (warm), real-mix c4 output 1.21x (1.13x of it this route: hk with HK_VLLM_GPTQ=0 "
+       "-> 1 on one backend), GSM8K-200 equal; gfx1201: "
        "Qwen3.8-27B-GPTQ-Int4 on one R9700 in the R9700 vLLM image (TRITON_ATTN), 3 alternating "
        "starts an arm: GSM8K-200 equal, TPOT ahead at 4 and 8 concurrent requests (disjoint), "
        "level at 1 and for an 8k prompt"),
