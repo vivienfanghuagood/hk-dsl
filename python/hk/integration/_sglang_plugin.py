@@ -52,6 +52,12 @@ def register() -> None:
     if switches.disabled():
         print(f"[hk] SGLang: off ({switches.DISABLE}=1), stock (pid {pid})", flush=True)
         return
+    from . import support  # noqa: PLC0415
+
+    problems, _ = support.check("sglang", switches.arch())
+    if problems:
+        print(support.off_line("SGLang", problems, pid), flush=True)
+        return
     routes = switches.on("sglang")
     if not routes:
         return

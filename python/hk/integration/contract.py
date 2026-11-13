@@ -214,20 +214,54 @@ def judge_vllm_gptq(f: dict) -> List[str]:
                       f"AutoGPTQLinearMethod.apply takes {f['apply']}"))
 
 
+_QUARK_HAS = ("self.is_symmetric", "self.group_size", "self.kernel", "self.pack_reorder")
+
+
+def quark_facts_of(cls) -> dict:
+    """gather_vllm_quark's facts from the loaded QuarkW4A16Int4 class (the route re-checks them
+    when vLLM imports the scheme)."""
+    src = inspect.getsource(cls)
+    return {"pwal": names(cls.process_weights_after_loading), "apply": names(cls.apply_weights),
+            "class_has": {a: a in src for a in _QUARK_HAS}}
+
+
 def gather_vllm_quark() -> Optional[dict]:
     """The QuarkW4A16Int4 entry points the stand-ins wrap and forward positionally, and the names
     it gives its kernel (the route reads the kernel's tensors by them). None where this vLLM has
-    no Quark W4A16 scheme: nothing to route."""
-    try:
-        from vllm.model_executor.layers.quantization.quark.schemes import (  # noqa: PLC0415
-            quark_w4a16_int4 as qs)
-    except ImportError:
+    no Quark W4A16 scheme: nothing to route.
+
+    Read from the source file, not imported: vLLM's quark.schemes package imports the OCP MX
+    scheme, and with it vllm._aiter_ops and aiter, which JIT-builds kernels at import -- on RDNA,
+    with an image's ROCm clang, a build that cannot work (the README failure of 2026-11-13). vLLM
+    imports the scheme only for a Quark model; the route patches it then and checks again."""
+    import ast  # noqa: PLC0415
+    import sys  # noqa: PLC0415
+
+    from . import vllm_quark as vq  # noqa: PLC0415
+
+    if vq.MODULE in sys.modules:
+        return quark_facts_of(sys.modules[vq.MODULE].QuarkW4A16Int4)
+    path = vq.source_path()
+    if path is None:
         return None
-    cls = qs.QuarkW4A16Int4
-    return {"pwal": names(cls.process_weights_after_loading), "apply": names(cls.apply_weights),
-            "class_has": {a: a in inspect.getsource(cls)
-                          for a in ("self.is_symmetric", "self.group_size", "self.kernel",
-                                    "self.pack_reorder")}}
+    with open(path) as fh:
+        src = fh.read()
+    cls = next((n for n in ast.parse(src).body
+                if isinstance(n, ast.ClassDef) and n.name == "QuarkW4A16Int4"), None)
+    if cls is None:
+        return None
+    fns = {n.name: n for n in cls.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+    def args(name):
+        fn = fns.get(name)
+        if fn is None:
+            return None
+        a = fn.args
+        return [x.arg for x in a.posonlyargs + a.args] + ([a.vararg.arg] if a.vararg else []) \
+            + [x.arg for x in a.kwonlyargs] + ([a.kwarg.arg] if a.kwarg else [])
+    body = ast.get_source_segment(src, cls) or ""
+    return {"pwal": args("process_weights_after_loading"), "apply": args("apply_weights"),
+            "class_has": {a: a in body for a in _QUARK_HAS}}
 
 
 def judge_vllm_quark(f: dict) -> List[str]:

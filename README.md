@@ -26,9 +26,12 @@ pip install hk-dsl && python3 -m sglang.launch_server --model-path Qwen/Qwen3-8B
     --attention-backend triton --disable-cuda-graph                 # SGLang (W7900 / RX 7900)
 ```
 
-The server's log then has a `[hk] vLLM routes on: ...` (or `[hk] SGLang routes
-on: ...`) line per process. `HK_DISABLE=1` gives you the stock engine back, which is how you
-see the difference on your own model ([how](docs/vllm.md#see-the-difference-on-your-model)).
+At startup the vLLM log shows hk's summary per process: hk's version and the stack it found, a
+`[hk] vLLM routes on: ...` line, and the switches that turn hk or one route off (SGLang prints
+`[hk] SGLang routes on: ...`). On an engine or GPU hk does not support (below), it prints one
+line saying so and stays off, and the engine runs as stock. `HK_DISABLE=1` gives you the stock
+engine back, which is how you see the difference on your own model
+([how](docs/vllm.md#see-the-difference-on-your-model)).
 No vLLM yet? On an R9700 one `docker run` does both: [hk in vLLM](docs/vllm.md#enable-hk-in-one-command). Each engine's page has the
 GPUs and models, how to check it worked, and troubleshooting:
 **[hk in vLLM](docs/vllm.md)** · **[hk in SGLang](docs/sglang.md)**.
@@ -205,6 +208,23 @@ it off: [hk in vLLM](docs/vllm.md), [hk in SGLang](docs/sglang.md). What each
 route replaces: [vLLM routes](docs/vllm-routes.md),
 [SGLang routes](docs/sglang-routes.md); every switch:
 [integration](docs/integration.md).
+
+**Supported engine stacks.** hk's routes run on the stacks they were measured on:
+
+| | supported |
+|---|---|
+| vLLM | 0.19 or newer, ROCm builds (a source build without a release tag is allowed; each route still checks the engine) |
+| SGLang | the builds in the support matrix (0.5.x, and the sglang-radeon build); each route checks the engine |
+| torch | 2.9 or newer |
+| ROCm | 7.2 or newer |
+| GPU | gfx1100, gfx1201, gfx950 (table above) |
+
+Anything else: hk prints one line naming what is unsupported and loads nothing more; the engine
+runs as stock. The measured images: [support matrix](docs/support-matrix.md).
+
+**Switches.** `HK_DISABLE=1` turns all of hk off. One route off: its variable `=0`, e.g.
+`HK_VLLM_PREFILL=0`; the startup summary lists the variables of the routes that are on, and
+[supported hardware](docs/supported-hardware.md#engine-routes-on-each) lists them all.
 
 ## For coding agents
 
