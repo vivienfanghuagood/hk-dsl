@@ -40,7 +40,7 @@ def test_on_by_default_on_gfx950_is_k1_k2_the_index_launch_and_sparse_mla():
 
 
 def test_on_by_default_on_gfx1100_is_every_route_validated_there():
-    assert on(gpu="gfx1100") == {"vllm_gemm", "vllm_moe", "vllm_sdpa",
+    assert on(gpu="gfx1100") == {"vllm_gemm", "vllm_gptq", "vllm_moe", "vllm_sdpa",
                                  "sglang_linear", "sglang_moe", "sglang_norm", "sgld_attn",
                                  "sgld_linear", "sgld_vaeconv", "sgld_rope", "sgld_qknorm", "sgld_ditnorm",
                                  "sdpa_k3", "vllm_prefill", "vllm_moe_wna16", "vllm_norm"}
@@ -454,12 +454,17 @@ def test_a_build_arch_list_is_not_the_gpu(no_arch_env, tmp_path):
 
 
 @pytest.mark.parametrize("name,gpu", [("vllm_int4", "gfx1100"), ("vllm_int4", "gfx1201"), ("vllm_int4", "gfx950"),
-                                      ("vllm_gptq", "gfx1100"), ("vllm_quark", "gfx1100")])
+                                      ("vllm_quark", "gfx1100")])
 def test_a_route_holding_a_weight_copy_is_off_by_default_and_says_why(name, gpu):
     d = switches.decide(name, {}, gpu)
     assert not d.on and d.why.startswith(f"off by default on {gpu}: holds a second copy of the 4-bit weights")
     assert f"{switches.ROUTES[name].env}=1 turns it on" in d.why
     assert switches.decide(name, {switches.ROUTES[name].env: "1"}, gpu).on       # opting in still works
+
+
+def test_gptq_is_on_on_gfx1100_with_one_skinny_copy():
+    """vllm_gptq on gfx1100 holds one copy (repacked into the skinny layout, vLLM's freed): on again."""
+    assert switches.decide("vllm_gptq", {}, "gfx1100").on
 
 
 @pytest.mark.parametrize("name", ["vllm_gptq", "vllm_quark"])

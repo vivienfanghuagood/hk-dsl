@@ -4,6 +4,14 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
+## Unreleased
+
+- vLLM, `vllm_gptq` on gfx1100: one copy of the weights. A GPTQ layer's codes are repacked once at load into the
+  RDNA skinny layout and vLLM's copy is freed, so the KV cache is stock's again (Qwen3.8-27B-GPTQ: 94k -> 288k
+  tokens), and hk serves every batch -- decode and prefill. On one W7900D against the best stock configuration
+  (ROCM_SEGMENTED_ATTN + TunableOp): TPOT 1.13-1.16x, TTFT 1.16-1.18x, real-mix output 1.21x, GSM8K-200 equal.
+  On by default on gfx1100 again.
+
 ## 0.9.22
 
 hk-dsl 0.9.22: the vLLM routes that keep a second copy of 4-bit weights are off by default -- `vllm_int4`
