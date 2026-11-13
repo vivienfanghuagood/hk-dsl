@@ -6,6 +6,19 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+**`pip install hk-dsl && vllm serve` no longer pulls aiter into an RDNA engine.** hk's Quark W4A16
+route checked its vLLM contract by importing vLLM's `quark.schemes` package, which imports the OCP MX
+scheme, `vllm._aiter_ops` and aiter; aiter JIT-builds kernels at import, and on a gfx1100 image whose
+ROCm clang lacks `-amdgpu-coerce-illegal-types` the build failed loudly in every `vllm serve` (Radeon
+Cloud's Base image, vLLM 0.16.1). The contract is now read from the scheme's source file and the
+route patches the scheme when vLLM itself imports it (Quark models only).
+
+**The plugins check the stack first, and say what they did.** On a vLLM older than 0.19, torch older
+than 2.9, ROCm older than 7.2 or a GPU other than gfx1100 / gfx1201 / gfx950, hk prints one line naming
+what is unsupported, loads nothing more and leaves the engine stock. When it is on, vLLM's log gets a
+summary per process: hk's version and the stack, the routes on, and the switches (`HK_DISABLE=1`, and
+each route's variable). README: the supported stacks and the switches.
+
 - hk's SDPA (every SGLang-Diffusion attention route) works under `torch.compile`: the kernel is one opaque
   op there (`torch.ops.hk_sdpa.attention`, with a fake that gives the output's shape and layout). Traced
   through, its launch broke the graph and its output's view could not be replayed -- with SGLang-Diffusion's

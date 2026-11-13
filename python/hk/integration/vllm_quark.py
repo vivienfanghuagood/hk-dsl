@@ -29,6 +29,8 @@ Off by default until measured against the >= 1.15x rule; `HK_VLLM_QUARK=1` turns
 
 from __future__ import annotations
 
+import os
+import sys
 from collections import Counter
 from typing import Callable, Optional
 
@@ -188,22 +190,87 @@ def apply_weights(self, layer, x, bias=None):
     return out.reshape(*x.shape[:-1], n)
 
 
+#: vLLM's Quark W4A16 scheme. Never imported by hk itself: the package it lives in
+#: (quark.schemes) also imports the OCP MX scheme, which imports vllm._aiter_ops and with it aiter,
+#: and aiter JIT-builds kernels at import -- on RDNA with an image's ROCm clang that cannot (the
+#: owner's README failure, 2026-11-13). vLLM imports it only for a Quark model; the route patches
+#: it then (_Finder), and its contract is read from the source file (contract.gather_vllm_quark).
+MODULE = "vllm.model_executor.layers.quantization.quark.schemes.quark_w4a16_int4"
+_FINDER = None
+
+
+def source_path() -> Optional[str]:
+    """quark_w4a16_int4.py of the installed vLLM, found without importing anything; None if absent."""
+    import importlib.util  # noqa: PLC0415
+
+    try:
+        spec = importlib.util.find_spec("vllm")
+    except (ImportError, ValueError):
+        return None
+    if spec is None or not spec.submodule_search_locations:
+        return None
+    path = os.path.join(list(spec.submodule_search_locations)[0], *MODULE.split(".")[1:]) + ".py"
+    return path if os.path.isfile(path) else None
+
+
+class _Finder:
+    """Patches MODULE when vLLM imports it (a Quark model): importing it here would import aiter."""
+
+    def find_spec(self, name, path, target=None):
+        if name != MODULE:
+            return None
+        import importlib.machinery  # noqa: PLC0415
+
+        _unhook()
+        spec = importlib.machinery.PathFinder.find_spec(name, path)
+        if spec is None or spec.loader is None:
+            return spec
+        run = spec.loader.exec_module
+
+        def exec_module(module):
+            run(module)
+            _patch_module(module)
+        spec.loader.exec_module = exec_module
+        return spec
+
+
+def _unhook() -> None:
+    global _FINDER
+    if _FINDER is not None:
+        if _FINDER in sys.meta_path:
+            sys.meta_path.remove(_FINDER)
+        _FINDER = None
+
+
 def apply_patch() -> str:
     """Route vLLM's Quark W4A16 linear layers. Returns what happened, in one line."""
-    global _ORIG_PWAL, _ORIG_APPLY
+    global _FINDER
     if not _common.importable("vllm"):
         return "vllm is not importable; quark not patched"
-    if _ORIG_APPLY is not None:
+    if _ORIG_APPLY is not None or _FINDER is not None:
         return "quark: already patched"
     from vllm.platforms import current_platform  # noqa: PLC0415
 
     if not current_platform.is_rocm():
         return "quark: not patched -- not a ROCm platform"
-    from vllm.model_executor.layers.quantization.quark.schemes import (  # noqa: PLC0415
-        quark_w4a16_int4 as qs)
+    if source_path() is None:
+        return "quark: not patched -- this vLLM has no Quark W4A16 scheme"
+    if MODULE in sys.modules:
+        return _patch_module(sys.modules[MODULE])
+    _FINDER = _Finder()
+    sys.meta_path.insert(0, _FINDER)
+    return _what() + " (when vLLM loads a Quark model)"
 
-    from .vllm_gemm import _own_compile_cache  # noqa: PLC0415
 
+def _patch_module(qs) -> str:
+    global _ORIG_PWAL, _ORIG_APPLY
+    if _ORIG_APPLY is not None:
+        return "quark: already patched"
+    from . import contract  # noqa: PLC0415
+
+    problems = contract.judge("vllm_quark", contract.quark_facts_of(qs.QuarkW4A16Int4))
+    if problems:                            # read from the file before; the loaded class decides
+        return contract.refuse_route("vllm", "vllm_quark", problems)
     PATCH.define(quark_w4a16)
     if vllm_gptq.read_skinny():             # else its hybrid layers are refused, counted
         HYBRID.define(quark_w4a16_hybrid)
@@ -211,6 +278,12 @@ def apply_patch() -> str:
     _ORIG_PWAL, _ORIG_APPLY = cls.process_weights_after_loading, cls.apply_weights
     cls.process_weights_after_loading = process_weights_after_loading
     cls.apply_weights = apply_weights
+    return _what()
+
+
+def _what() -> str:
+    from .vllm_gemm import _own_compile_cache  # noqa: PLC0415
+
     return (f"quark -> hk for symmetric Quark W4A16 layers: on RDNAHybridW4A16LinearKernel "
             f"({', '.join(vllm_gptq.HYBRID_ARCHES)}) the fp16 batches vLLM runs on Triton, in "
             f"place (decode forms to {vllm_gptq.HYBRID_MAX_M} tokens, the large-batch form "
@@ -220,11 +293,10 @@ def apply_patch() -> str:
 
 def revert() -> str:
     global _ORIG_PWAL, _ORIG_APPLY
+    _unhook()
     if _ORIG_APPLY is None:
         return "quark: not patched"
-    from vllm.model_executor.layers.quantization.quark.schemes import (  # noqa: PLC0415
-        quark_w4a16_int4 as qs)
-
+    qs = sys.modules[MODULE]
     qs.QuarkW4A16Int4.process_weights_after_loading = _ORIG_PWAL
     qs.QuarkW4A16Int4.apply_weights = _ORIG_APPLY
     _ORIG_PWAL = _ORIG_APPLY = None

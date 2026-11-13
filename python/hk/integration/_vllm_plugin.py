@@ -153,6 +153,14 @@ def register() -> None:
     if switches.disabled():
         print(f"[hk] vLLM: off ({switches.DISABLE}=1), stock (pid {pid})", flush=True)
         return
+    # The stack before anything else: on a vLLM / torch / ROCm / GPU hk was not measured on, hk
+    # is fully off and imports nothing more (no route module, no engine module, no aiter).
+    from . import support  # noqa: PLC0415
+
+    problems, seen = support.check("vllm", switches.arch())
+    if problems:
+        print(support.off_line("vLLM", problems, pid), flush=True)
+        return
     routes = switches.on("vllm")
     master = os.environ.get(switches.ENGINES["vllm"], "")
     user = "" if switches.is_off(master) else os.environ.get("HK_VLLM_USER", "")
@@ -196,4 +204,10 @@ def register() -> None:
     arm_jit_notice("vLLM plugin")
     on = ", ".join(f"{n} ({d.why})" for n, d in routes.items() if n in applied)
     left = f"; OFF: {', '.join(off)}" if off else ""
+    from .. import __version__  # noqa: PLC0415
+
+    head, _, tail = support.summary("vLLM", __version__, seen, [n for n in routes if n in applied],
+                                    list(off), {n: switches.ROUTES[n].env for n in routes}, pid)
+    print(head, flush=True)
     print(f"[hk] vLLM routes on: {on}{left}; {'; '.join(notes)} (pid {pid})", flush=True)
+    print(tail, flush=True)
