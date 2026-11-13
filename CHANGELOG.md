@@ -4,7 +4,20 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
-## Unreleased
+## 0.9.22
+
+hk-dsl 0.9.22: the vLLM routes that keep a second copy of 4-bit weights are off by default -- `vllm_int4`
+(AWQ) on every GPU, `vllm_gptq` and `vllm_quark` on gfx1100 -- so they no longer take ~12 GB of KV cache
+on a 27B model; their switches at `1` turn them on, and vLLM's startup log says which are off and why.
+No change to the dialect (`hk-dialect-8`).
+
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels below are the same files.
+
+    pip install hk_dsl-0.9.22-cp312-cp312-manylinux_2_35_x86_64.whl
+
+### Changes
 
 **Off by default: the 4-bit linear routes that keep a second weight copy** (D-20261113-14). `vllm_int4`
 (AWQ, every GPU), `vllm_gptq` and `vllm_quark` on gfx1100 kept a second copy of the 4-bit weights beside
