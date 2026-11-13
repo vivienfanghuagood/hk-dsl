@@ -29,7 +29,7 @@ beside its model).
 | 13 | [`13_templates_gemm.py`](../examples/13_templates_gemm.py) | `hk.templates.gemm`: linear + bias + GELU in one kernel -- your epilogue traced into the store of hk's tuned GEMM, on both GPUs ([docs/templates/gemm.md](templates/gemm.md)) | gfx1100, gfx1201, gfx950 |
 | 14 | [`14_task_graph.py`](../examples/14_task_graph.py) | `hk.comm` (gfx950): a persistent `resident=True` grid taking tasks from a queue (`hk.comm.claim`), each layer waiting for the one before (`wait` with a timeout into an error element, `arrive`), through `"device"`-scoped tensors; `hk.arch.xcd_id()` shows the tasks spread over the 8 XCDs ([docs/design/comm.md](design/comm.md)) | gfx950 |
 | 15 | [`15_placement.py`](../examples/15_placement.py) | which XCD runs which workgroup: `placement=hk.Placement.cluster(...)`, `Kernel.placed()`, `placement="auto"` and `placement_choice()`; outputs bitwise the unplaced kernel's, `hk.check --placement` with no GPU; the identity on gfx1100 ([design](design/placement-pass.md)) | gfx1100, gfx1201, gfx950 |
-| | [`validate.py`](../examples/validate.py) | the shipped `hk.ops` kernels at typical LLM shapes: correctness, then speed against torch |
+| | [`validate.py`](../examples/validate.py) | the shipped `hk.ops` kernels at typical LLM shapes: correctness, then speed against torch | gfx1100, gfx1201, gfx950 |
 
 ## Running
 
