@@ -392,6 +392,29 @@ EXL_CHUNK = 8
 EXL_GEMV_MAX = 4
 
 
+#: ExLlama's nibble order in a skinny word: nibble i holds column 8w + EXL_ORDER[i] of the row.
+EXL_ORDER = (0, 2, 4, 6, 1, 3, 5, 7)
+
+
+def gptq_to_skinny(qweight, chunk: int = 2048):
+    """A GPTQ checkpoint's codes (int32 [K/8, N], packed along K, nibble i = row 8w + i) in vLLM's RDNA
+    skinny layout (int32 [N, K/8], nibble i of word w = column 8w + EXL_ORDER[i] -- what vLLM's
+    `pack_skinny_int4` gives and `exllama_matmul` / `exllama_large_matmul` read in place). N is done
+    `chunk` columns at a time, so the transient is a few hundred MB at most, not 8x the codes."""
+    import torch  # noqa: PLC0415
+
+    k8, n = qweight.shape
+    out = torch.empty((n, k8), device=qweight.device, dtype=torch.int32)
+    shifts = torch.arange(0, 32, 4, device=qweight.device, dtype=torch.int32)
+    for n0 in range(0, n, chunk):
+        q = qweight[:, n0:n0 + chunk]
+        codes = ((q.unsqueeze(1) >> shifts.view(1, 8, 1)) & 15).reshape(k8 * 8, -1)   # [K, c]
+        g = codes.t().reshape(-1, k8, 8).to(torch.int64)                               # [c, K/8, 8]
+        words = sum(g[:, :, col] << (4 * i) for i, col in enumerate(EXL_ORDER))
+        out[n0:n0 + chunk] = torch.where(words >= 2 ** 31, words - 2 ** 32, words).to(torch.int32)
+    return out
+
+
 def exllama_takes(m: int, n: int, k: int, group: int) -> bool:
     """Whether `exllama_matmul` runs an (M, N, K) GEMM: fp16, N a multiple of 16, K of
     64 * GEMV_WARPS, group a multiple of 32 (the small-batch form's needs; the WMMA form's are

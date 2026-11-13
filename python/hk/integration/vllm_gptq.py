@@ -121,6 +121,50 @@ def gptq_w4a16_hybrid(x, w_q, w_s, group: int, cu: int):
     return torch.ops.vllm.rdna_hybrid_w4a16_apply(x, w_q, w_s, None, None, cu, group)
 
 
+#: Where hk takes RDNA3W4A16LinearKernel's layers without a second copy (D-20261113-14): the codes are
+#: repacked once at load into vLLM's RDNA skinny layout (the layout gfx1201's hybrid kernel keeps,
+#: built with vLLM's own transform), vLLM's tensors are freed, and hk serves every batch on them --
+#: its in-place forms, measured against vLLM's gptq_gemm_rdna3 on the same codes on a W7900D
+#: (Qwen3.8-27B GPTQ, every merged linear): 1.06-2.24x at 1-32 tokens, 1.02-1.25x at 128-4096.
+SKINNY_ARCHES = ("gfx1100",)
+#: The most tokens the small-batch form takes on a skinny layer; above, the large-batch form.
+SKINNY_MAX_M = 64
+
+
+def _fake_skinny(x, w_q, w_s, group):
+    return x.new_empty((x.shape[0], w_q.shape[0]))
+
+
+SKINNY = engine.Op(
+    "hk_vllm::gptq_w4a16_skinny",
+    "gptq_w4a16_skinny(Tensor x, Tensor w_q, Tensor w_s, int group) -> Tensor",
+    _fake_skinny, paths=("hk", "hk_large", "cast"), graph="safe")
+
+
+def gptq_w4a16_skinny(x, w_q, w_s, group: int):
+    """y = x @ W.T for a layer whose only copy of W is hk's skinny one (`_skinny_pwal`): the
+    small-batch form up to SKINNY_MAX_M tokens, the large-batch form above. vLLM's tensors are
+    gone, so every batch is hk's: a non-fp16 x runs in fp16 and is cast back (counted)."""
+    import torch  # noqa: PLC0415
+
+    from ..ops import w4a16 as hk_w4  # noqa: PLC0415
+
+    dtype = x.dtype
+    if dtype != torch.float16:
+        SKINNY.count("cast")
+        x = x.to(torch.float16)
+    x = x if x.is_contiguous() else x.contiguous()
+    if x.shape[0] <= SKINNY_MAX_M:
+        if dtype == torch.float16:
+            SKINNY.count("hk")
+        out = hk_w4.exllama_matmul(x, w_q, w_s, group)
+    else:
+        if dtype == torch.float16:
+            SKINNY.count("hk_large")
+        out = hk_w4.exllama_large_matmul(x, w_q, w_s, group)
+    return out if dtype == torch.float16 else out.to(dtype)
+
+
 def gptq_w4a16(x, w_q, w_zp, w_s, g_idx, hk_qw, hk_s, hk_zs, group: int):
     """y = x @ W.T for a 4-bit GPTQ W held both ways: hk's kernel where it
     takes the batch, vLLM's RDNA3 kernel on vLLM's tensors otherwise."""
@@ -234,6 +278,12 @@ def process_weights_after_loading(self, layer) -> None:
     if not why and type(self.kernel).__name__ == _HYBRID:
         _hybrid_pwal(self, layer)
         return
+    if not why and type(self.kernel).__name__ == _RDNA3:
+        from ..target import current_arch  # noqa: PLC0415
+
+        if current_arch() in SKINNY_ARCHES:
+            _skinny_pwal(self, layer)
+            return
     s = getattr(layer, "scales", None)
     if not why and (s is None or s.dtype not in (torch.float16, torch.bfloat16)):
         why = f"scales {getattr(s, 'dtype', None)}"
@@ -273,6 +323,63 @@ def process_weights_after_loading(self, layer) -> None:
     layer.hk_s = torch.nn.Parameter(hs, requires_grad=False)
     # the op's schema keeps a zs slot; the symmetric form reads none
     layer.hk_zs = torch.nn.Parameter(hs.new_empty(0), requires_grad=False)
+
+
+def skinny_why(layer, group: int) -> str:
+    """'' if this RDNA3W4A16 layer's checkpoint tensors (before vLLM touches them) can become hk's
+    only copy -- symmetric codes with GPTQ's stored zero point 8 (0x77777777, one short), fp16
+    scales, a shape both of hk's forms take -- else why not."""
+    import torch  # noqa: PLC0415
+
+    from ..ops import w4a16 as hk_w4  # noqa: PLC0415
+
+    q, s = getattr(layer, "qweight", None), getattr(layer, "scales", None)
+    if q is None or s is None or q.dim() != 2 or s.dim() != 2:
+        return "no qweight / scales on the layer"
+    if q.dtype != torch.int32 or s.dtype != torch.float16:
+        return f"qweight {q.dtype} / scales {s.dtype} (fp16 scales only)"
+    k, n = q.shape[0] * 8, q.shape[1]
+    if s.shape != (k // group, n):
+        return f"scales {tuple(s.shape)}"
+    if not (hk_w4.exllama_takes(1, n, k, group) and hk_w4.exllama_large_takes(n, k, group)):
+        return f"shape {n}x{k}"
+    qz = getattr(layer, "qzeros", None)
+    if qz is not None and qz.dim() == 2 and not bool((qz.data == 0x77777777).all()):
+        return "zero points not 8"
+    return ""
+
+
+def _skinny_pwal(self, layer) -> None:
+    """RDNA3W4A16LinearKernel's layer as ONE copy in vLLM's RDNA skinny layout: the checkpoint's
+    codes ([K/8, N], packed along K) in the skinny layout (`hk.ops.w4a16.gptq_to_skinny`: int32
+    [N, K/8], ExLlama nibble order, as vLLM's `pack_skinny_int4`) and the scales as [N, K/group] --
+    what gfx1201's hybrid
+    kernel holds and hk's forms read in place. vLLM's own processing never runs on the layer, and
+    its tensors are freed. A layer hk's forms cannot take keeps vLLM's path (counted)."""
+    import torch  # noqa: PLC0415
+
+    from ..ops import w4a16 as hk_w4  # noqa: PLC0415
+
+    group = self.quant_config.group_size
+    why = skinny_why(layer, group)
+    if why:
+        REFUSED[why] += 1
+        _ORIG_PWAL(self, layer)
+        return
+    q, s = layer.qweight.data, layer.scales.data
+    w_q = hk_w4.gptq_to_skinny(q)                                  # [N, K/8], ExLlama nibble order
+    w_s = s.t().contiguous()                                                              # [N, K/G]
+    layer.hk_skinny_q = torch.nn.Parameter(w_q, requires_grad=False)
+    layer.hk_skinny_s = torch.nn.Parameter(w_s, requires_grad=False)
+    for name in ("qweight", "scales", "qzeros", "g_idx"):          # free vLLM's copy
+        t = getattr(layer, name, None)
+        if isinstance(t, torch.Tensor):
+            t.data = t.data.new_empty((0,))
+    SKINNY_LAYERS[0] += 1
+
+
+#: Layers held as hk's one skinny copy, in this process.
+SKINNY_LAYERS = [0]
 
 
 def _hybrid_pwal(self, layer) -> None:
@@ -322,6 +429,12 @@ def read_skinny() -> bool:
 
 
 def apply(self, layer, x, bias=None):
+    if hasattr(layer, "hk_skinny_q"):
+        out = SKINNY(x.reshape(-1, x.shape[-1]), layer.hk_skinny_q, layer.hk_skinny_s,
+                     self.quant_config.group_size)
+        if bias is not None:
+            out.add_(bias)
+        return out.reshape(*x.shape[:-1], layer.hk_skinny_q.shape[0])
     if getattr(layer, "hk_hybrid", False):
         from vllm.utils.platform_utils import num_compute_units  # noqa: PLC0415
 
@@ -357,6 +470,7 @@ def apply_patch() -> str:
     from .vllm_gemm import _own_compile_cache  # noqa: PLC0415
 
     PATCH.define(gptq_w4a16)
+    SKINNY.define(gptq_w4a16_skinny)
     if read_skinny():                       # else its hybrid layers are refused, counted
         HYBRID.define(gptq_w4a16_hybrid)
     cls = auto_gptq.AutoGPTQLinearMethod
@@ -364,7 +478,8 @@ def apply_patch() -> str:
     cls.process_weights_after_loading = process_weights_after_loading
     cls.apply = apply
     return (f"gptq -> hk for 4-bit symmetric GPTQ layers on RDNA3W4A16LinearKernel "
-            f"(hk's symmetric form), 16-bit batches of {MIN_M} to 64 tokens, and on "
+            f"({', '.join(SKINNY_ARCHES)}: repacked once into the RDNA skinny layout, vLLM's copy "
+            f"freed, every batch on hk's forms), and on "
             f"RDNAHybridW4A16LinearKernel ({', '.join(HYBRID_ARCHES)}) the fp16 batches vLLM "
             f"runs on Triton (decode forms to {HYBRID_MAX_M} tokens, the large-batch form "
             f"above), in place (compile cache "
@@ -388,4 +503,5 @@ def status() -> str:
         return "not patched"
     refused = ", ".join(f"{k}: {v}" for k, v in REFUSED.items())
     hyb = f"; {HYBRID.summary()}" if HYBRID.defined else ""
+    hyb += f"; skinny layers {SKINNY_LAYERS[0]}: {SKINNY.summary()}" if SKINNY.defined else ""
     return PATCH.summary() + hyb + (f"; layers left on vLLM's path: {refused}" if refused else "")

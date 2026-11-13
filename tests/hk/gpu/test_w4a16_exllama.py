@@ -43,6 +43,24 @@ def _layer(n, k, group, g, q=None, s=None):
     return _skinny(q), s.contiguous(), w
 
 
+def _gptq_pack(q):
+    """Codes [K, N] -> a GPTQ checkpoint's qweight: int32 [K/8, N], nibble i of word w = row 8w + i."""
+    k, n = q.shape
+    shifts = torch.arange(0, 32, 4, device=q.device, dtype=torch.int64)
+    words = (q.to(torch.int64).reshape(k // 8, 8, n) << shifts.view(1, 8, 1)).sum(1)
+    return torch.where(words >= 2 ** 31, words - 2 ** 32, words).to(torch.int32)
+
+
+@pytest.mark.parametrize("chunk", [16, 48, 2048])
+def test_gptq_to_skinny_is_the_skinny_layout_of_the_checkpoints_codes(chunk):
+    """What vllm_gptq builds on gfx1100 (its only copy of the layer): the checkpoint's K-packed codes
+    in the skinny layout this file checks against vLLM's pack_skinny_int4, whatever the N chunk."""
+    g = torch.Generator("cuda").manual_seed(3)
+    k, n = 512, 96
+    q = torch.randint(0, 16, (k, n), device="cuda", generator=g, dtype=torch.int32)
+    assert torch.equal(w4a16.gptq_to_skinny(_gptq_pack(q), chunk=chunk), _skinny(q.t().contiguous()))
+
+
 def _within_two_ulps_a_row(got, want):
     top = want.abs().amax(dim=1, keepdim=True)
     ulp = torch.pow(2.0, torch.floor(torch.log2(top.clamp_min(2.0 ** -14)))) * 2.0 ** -10
