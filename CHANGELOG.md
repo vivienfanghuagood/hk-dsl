@@ -4,7 +4,20 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
-## Unreleased
+## 0.9.21
+
+hk-dsl 0.9.21: `pip install hk-dsl && vllm serve` on an RDNA image no longer pulls aiter into the engine
+(Radeon Cloud's Base image failed in aiter's JIT build); the vLLM and SGLang plugins check the stack first
+and stay off, in one line, on one they do not support; vLLM's log gets a summary of what hk did and how to
+turn it off. No change to the dialect (`hk-dialect-8`).
+
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels below are the same files.
+
+    pip install hk_dsl-0.9.21-cp312-cp312-manylinux_2_35_x86_64.whl
+
+### Changes
 
 **`pip install hk-dsl && vllm serve` no longer pulls aiter into an RDNA engine.** hk's Quark W4A16
 route checked its vLLM contract by importing vLLM's `quark.schemes` package, which imports the OCP MX
@@ -27,13 +40,13 @@ each route's variable). README: the supported stacks and the switches.
 
 - SGLang-Diffusion, opt-in (`HK_SGLD_H3VAE=1`, `HK_SGLD_PATCHEMBED=1`): MiniMax H3's image edit. The VAE
   encoder's convs on the reference image (one frame behind causal zero padding) run as a conv2d with the last
-  time tap, 1.99-7.35x MIOpen's conv3d a conv on a W7900D; Qwen3-VL's vision patch embedding runs as the one
-  F.linear it is (538 ms of conv3d -> 0.28 ms for 4096 patches). Both exact up to summation order; on by
+  time tap, Qwen3-VL's vision patch embedding runs as the one
+  F.linear it is. Both exact up to summation order; on by
   default once an end-to-end edit smoke is in.
 
 - SGLang-Diffusion's linear route takes an input that is rows of a wider buffer -- a DiT's fc2 reading the
   activation half of its gate / up buffer -- as it is, passing the row stride to hk's GEMM; it had gone to
-  hipBLASLt. MiniMax H3's fc2 on a W7900D: 1.89x / 1.57x `F.linear` on the same view at 1072 / 3120 rows.
+  hipBLASLt.
 
 **SGLang-Diffusion: the same seed gives the same image in every process.** `sgld_linear` decided hk vs `F.linear` per shape by timing in each process, so a near-tie shape could take different kernels in different processes (or TP ranks) and change the image slightly (seen in MiniMax H3-Image's edit). The decision is now pinned per GPU in hk's cache directory the first time a shape is seen, under a file lock.
 
@@ -47,6 +60,10 @@ each route's variable). README: the supported stacks and the switches.
   `gemma_add_rms_norm`, safe to capture in a CUDA graph; the engine gets its own compile cache.
 - `engine.Op` resolves its torch op when it is defined, so torch.compile no longer recompiles a graph on the
   second call of a route's op.
+
+**Docs.** The scorecard page is marked "to be re-verified" while hk's numbers are checked again from a fair
+baseline; do not quote it until the note is removed. Its broken MI355X table renders again, and CI now fails
+on a Markdown table whose rows do not match its header and on broken relative links (`scripts/check_docs.py`).
 
 ## 0.9.20
 
