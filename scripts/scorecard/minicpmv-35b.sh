@@ -36,12 +36,12 @@ ARGS=(--served-model-name MiniCPM-V-4.7-35B-A3B --dtype bfloat16 --tensor-parall
       --distributed-executor-backend mp --moe-backend triton --disable-custom-all-reduce
       --max-model-len 262144 --max-num-seqs 32 --max-num-batched-tokens 4096 --gpu-memory-utilization 0.925
       --enable-prefix-caching --trust-remote-code --attention-backend ROCM_SEGMENTED_ATTN --port "$PORT")
-MOUNTS=(-v "$OUT:/out" -v "$TUNABLEOP_DIR:/tunableop" -v "$HOME/.cache/huggingface:/root/.cache/huggingface")
+MOUNTS=(-v "$OUT:/out" -v "$TUNABLEOP_DIR:/tunableop" -v "$HOME/.cache/huggingface:/hf")
 [ -n "$MODEL_PATH" ] && MOUNTS+=(-v "$MODEL_PATH:/model:ro") && MODEL=/model
 
 start() {   # start <arm> <n>: one server, in the background; waits until it serves
     local arm=$1 n=$2 name="sc35b-$1-$2"
-    local env=(-e HSA_DISABLE_COREDUMP_ON_EXCEPTION=1 -e VLLM_ROCM_USE_AITER=0 -e NCCL_P2P_DISABLE=1
+    local env=(-e HF_HOME=/hf -e HSA_DISABLE_COREDUMP_ON_EXCEPTION=1 -e VLLM_ROCM_USE_AITER=0 -e NCCL_P2P_DISABLE=1
                -e HIP_VISIBLE_DEVICES="$GPUS" -e PYTORCH_TUNABLEOP_ENABLED=1 -e PYTORCH_TUNABLEOP_TUNING="${TUNE:-0}"
                -e PYTORCH_TUNABLEOP_FILENAME=/tunableop/tunableop_results%d.csv)
     local pre="true"
