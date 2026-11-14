@@ -34,8 +34,9 @@ metadata:
   labels:
     app: ${HK_CI_POD}
 spec:
-  nodeSelector:
-    kubernetes.io/hostname: ${HK_CI_NODE}
+  # nodeName, not a nodeSelector: the pod still starts on its node when the node is cordoned
+  # (a selector goes through the scheduler, which skips cordoned nodes).
+  nodeName: ${HK_CI_NODE}
   restartPolicy: Always
   containers:
     - name: ci
