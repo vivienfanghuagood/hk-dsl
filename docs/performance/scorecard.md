@@ -38,32 +38,30 @@ an empty hk cache.
 
 ## Qwen3.8-27B GPTQ-Int4, vLLM, 1x Radeon PRO W7900D
 
-**Result:** hk makes decoding 1.13-1.16x faster and the first token of a long prompt 1.16-1.18x sooner, with the
-same KV-cache capacity. This is hk-dsl's main branch (#399); **it ships in the next release, 0.9.23**.
+**Result:** hk makes the first token of a long prompt 1.16x sooner and decoding 1.12-1.13x faster, with the same
+KV-cache capacity (hk-dsl 0.9.23).
 
 **Setup:** one Radeon PRO W7900D (gfx1100). `palmfuture/Qwen3.8-27B-GPTQ-Int4`, vLLM 0.33.0, torch 2.13,
-ROCm 7.2.3, hk-dsl main (0.9.22 + #399). One uncached prompt of 8k or 32k tokens for first token; 2k-token prompts
-with 256 output tokens at 1, 4 and 8 concurrent requests for time per output token. Two campaigns of 2+2
-alternating server starts on one card; 0 errored requests.
+ROCm 7.2.3, hk-dsl 0.9.23's code (measured as the 0.9.22 wheel plus #399, which is what 0.9.23 ships). One
+uncached prompt of 8k or 32k tokens for first token; 2k-token prompts with 256 output tokens at 1 and 8 concurrent
+requests for time per output token. One server start per arm, by the script below; 0 errored requests.
 
 **Best stock:** `--attention-backend ROCM_SEGMENTED_ATTN`, an offline-tuned TunableOp file and CUDA graphs.
 **hk:** hk-dsl's default routes on `TRITON_ATTN`, with the same TunableOp file.
 
 | metric | best stock | hk | change |
 |---|---:|---:|---:|
-| time per output token, 1 request | 32.7 ms | 28.5 ms | **1.15x** |
-| time per output token, 8 requests | 67.5 ms | 59.8 ms | **1.13x** |
-| first token, one 8k-token prompt | 8.32 s | 7.05 s | **1.18x** |
-| first token, one 32k-token prompt | 35.2 s | 30.4 s | **1.16x** |
-| KV cache capacity | 288,085 tokens | 288,768 tokens | equal |
+| first token, one 32k-token prompt | 35.3 s | 30.5 s | **1.16x** |
+| first token, one 8k-token prompt | 8.20 s | 7.07 s | **1.16x** |
+| time per output token, 1 request | 32.5 ms | 28.8 ms | **1.13x** |
+| time per output token, 8 requests | 67.6 ms | 60.2 ms | **1.12x** |
+| KV cache capacity | 281,941 tokens | 283,306 tokens | equal |
 
-Quality: equal (GSM8K-200 91.0-91.5% for both arms on two runs each; McNemar p = 1.00).
-Of the decode gain, all of it is hk's int4 linear route (`vllm_gptq`): with that route off, hk's decode is level
-with stock.
+Quality: equal (GSM8K-200 91.0-91.5% for both arms, two runs each; McNemar p = 1.00). The decode gain is hk's int4
+linear route (`vllm_gptq`); with it off, hk's decode is level with stock.
 
 **Reproduce:** [`scripts/scorecard/qwen3.8-27b-gptq.sh`](../../scripts/scorecard/qwen3.8-27b-gptq.sh) -- one
-W7900 48 GB, about 45 min (15 min of it TunableOp tuning, once). Set `HK_VERSION=0.9.23` once it is released;
-with 0.9.22 the int4 route is off on this GPU.
+W7900 48 GB, about 45 min (15 min of it TunableOp tuning, once); hk-dsl 0.9.23 from PyPI by default.
 
 ## Not yet re-verified
 

@@ -102,14 +102,16 @@ of 4.40 s).
 - **Hardware:** one Radeon PRO W7900D (gfx1100).
 - **Engine:** vLLM 0.33.0, torch 2.13.0 (HIP 7.2); `--dtype float16 --max-model-len 32768 --max-num-seqs 32
   --gpu-memory-utilization 0.90 --enable-prefix-caching`, CUDA graphs. Model `palmfuture/Qwen3.8-27B-GPTQ-Int4`.
-- **hk:** hk-dsl main at the merge of #399 (0.9.22 plus #399: `vllm_gptq` on gfx1100 holds one copy of the
-  weights and serves every batch); it ships in 0.9.23. In 0.9.21 the same route kept a second copy of the weights
+- **hk:** hk-dsl 0.9.23's code (`vllm_gptq` on gfx1100 holds one copy of the weights and serves every batch, #399),
+  measured as the 0.9.22 wheel plus #399's Python before 0.9.23 was tagged. In 0.9.21 the same route kept a second copy of the weights
   (KV cache 288k -> 94k tokens); 0.9.22 turned it off on this GPU.
 - **Arms:** best stock = `--attention-backend ROCM_SEGMENTED_ATTN` + offline TunableOp (tuned on this card) + CUDA
   graphs; hk = hk-dsl's default routes on `TRITON_ATTN` + the same TunableOp file.
-- **Starts:** two campaigns of 2+2 alternating server starts on one card (same numbers within 0.3%); medians over
-  the starts. 0 errored requests.
-- **Rows not in the table:** time per output token at 4 requests 44.3 ms vs 38.2 ms (1.16x).
+- **Starts:** the table is the script's own run (`PLAN="stock hk"`, one start per arm, 0044, 2026-11-14). It agrees
+  with #399's acceptance: two campaigns of 2+2 alternating starts on one card, medians, 0 errored requests --
+  time per output token 32.7 -> 28.5 ms (1.15x) / 44.3 -> 38.2 ms (1.16x) / 67.5 -> 59.8 ms (1.13x) at 1 / 4 / 8
+  requests, first token 8.32 -> 7.05 s (1.18x) and 35.2 -> 30.4 s (1.16x) at 8k / 32k, KV cache 288,085 -> 288,768.
+- **Rows not in the table:** time per output token at 4 requests 44.3 ms vs 38.5 ms (1.15x) in the script's run.
 - **Quality:** GSM8K-200, greedy: stock 91.0% and 91.5%, hk 91.5% and 91.0% on two runs each; McNemar p = 1.00.
 - **Isolating the int4 route** (both arms hk on `TRITON_ATTN`, `HK_VLLM_GPTQ=0` against `=1`): time per output
   token 1.14x / 1.15x / 1.13x at 1 / 4 / 8 requests, first token 1.15x / 1.12x at 8k / 32k; so the decode gain is
