@@ -263,6 +263,48 @@ def test_vllm_gptq_takes_min_m_to_64_and_leaves_the_rest(monkeypatch):
     assert seen == [m for m in (vllm_gptq.MIN_M - 1, 65) if m > 0]
 
 
+def test_vllm_gptq_gfx1100_holds_one_skinny_copy_and_serves_every_batch(monkeypatch):
+    """RDNA3W4A16LinearKernel's layer on gfx1100 (D-20261113-14): the checkpoint's codes become hk's
+    only copy (the skinny layout), vLLM's processing never runs and its tensors are freed, and every
+    batch -- 1 to past 64 tokens, fp16 or not -- is hk's, within a bf16-free fp16 tolerance."""
+    import types  # noqa: PLC0415
+
+    if current_arch() not in vllm_gptq.SKINNY_ARCHES:
+        pytest.skip("the skinny (no-copy) path is gfx1100's")
+    monkeypatch.setattr(vllm_gptq, "_ORIG_PWAL", _never)
+    if not vllm_gptq.SKINNY.defined:
+        vllm_gptq.SKINNY.define(vllm_gptq.gptq_w4a16_skinny)
+    n, k, group = 512, 1024, 32
+    g = torch.Generator("cuda").manual_seed(9)
+    q = torch.randint(0, 16, (k, n), device="cuda", generator=g, dtype=torch.int32)
+    s = (torch.rand(k // group, n, device="cuda", generator=g) * 0.02 + 0.005).half()
+    shifts = torch.arange(0, 32, 4, device="cuda", dtype=torch.int64)
+    qw = (q.to(torch.int64).reshape(k // 8, 8, n) << shifts.view(1, 8, 1)).sum(1)
+    qw = torch.where(qw >= 2 ** 31, qw - 2 ** 32, qw).to(torch.int32)
+    layer = torch.nn.Module()
+    layer.qweight = torch.nn.Parameter(qw, requires_grad=False)
+    layer.scales = torch.nn.Parameter(s, requires_grad=False)
+    layer.qzeros = torch.nn.Parameter(torch.full((k // group, n // 8), 0x77777777, device="cuda",
+                                                 dtype=torch.int32), requires_grad=False)
+    method = types.SimpleNamespace(quant_config=types.SimpleNamespace(group_size=group))
+    vllm_gptq._skinny_pwal(method, layer)
+    assert layer.qweight.numel() == layer.scales.numel() == layer.qzeros.numel() == 0   # freed
+    assert tuple(layer.hk_skinny_q.shape) == (n, k // 8) and tuple(layer.hk_skinny_s.shape) == (n, k // group)
+    w = ((q - 8).double() * s.double().repeat_interleave(group, 0)).t()               # [N, K]
+    for m in (1, 2, 8, 64, 65, 128, 1000):
+        x = torch.randn(m, k, device="cuda", dtype=torch.float16, generator=g) * 0.1
+        before = dict(vllm_gptq.SKINNY.stats)
+        y = vllm_gptq.apply(method, layer, x)
+        path = "hk" if m <= vllm_gptq.skinny_max_m(n, k) else "hk_large"
+        assert vllm_gptq.SKINNY.stats[path] == before.get(path, 0) + 1 and y.shape == (m, n)
+        _close(y, (x.double() @ w.t()).float())
+    xb = torch.randn(4, k, device="cuda", dtype=torch.bfloat16, generator=g) * 0.1
+    before = vllm_gptq.SKINNY.stats.get("cast", 0)
+    yb = vllm_gptq.apply(method, layer, xb)
+    assert yb.dtype == torch.bfloat16 and vllm_gptq.SKINNY.stats["cast"] == before + 1
+    _close(yb, (xb.double() @ w.t()).float())
+
+
 def test_vllm_gptq_hybrid_takes_every_batch_vllm_sends_to_triton_in_place(monkeypatch):
     """RDNAHybridW4A16LinearKernel's layers (gfx1201): hk reads vLLM's own skinny-layout tensors and
     takes the batches vLLM would run on Triton, up to HYBRID_MAX_M tokens; vLLM's op the rest,

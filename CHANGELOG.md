@@ -4,6 +4,36 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
+## Unreleased
+
+- vLLM, `vllm_gptq` on gfx1100: one copy of the weights. A GPTQ layer's codes are repacked once at load into the
+  RDNA skinny layout and vLLM's copy is freed, so the KV cache is stock's again (Qwen3.8-27B-GPTQ: 94k -> 288k
+  tokens), and hk serves every batch -- decode and prefill. On one W7900D against the best stock configuration
+  (ROCM_SEGMENTED_ATTN + TunableOp): TPOT 1.13-1.16x, TTFT 1.16-1.18x, real-mix output 1.21x
+  (1.13x of it this route alone), GSM8K-200 equal.
+  On by default on gfx1100 again.
+
+## 0.9.22
+
+hk-dsl 0.9.22: the vLLM routes that keep a second copy of 4-bit weights are off by default -- `vllm_int4`
+(AWQ) on every GPU, `vllm_gptq` and `vllm_quark` on gfx1100 -- so they no longer take ~12 GB of KV cache
+on a 27B model; their switches at `1` turn them on, and vLLM's startup log says which are off and why.
+No change to the dialect (`hk-dialect-8`).
+
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels below are the same files.
+
+    pip install hk_dsl-0.9.22-cp312-cp312-manylinux_2_35_x86_64.whl
+
+### Changes
+
+**Off by default: the 4-bit linear routes that keep a second weight copy** (D-20261113-14). `vllm_int4`
+(AWQ, every GPU), `vllm_gptq` and `vllm_quark` on gfx1100 kept a second copy of the 4-bit weights beside
+vLLM's (for the batches they hand back to vLLM's kernel), which took ~12 GB of KV cache on a 27B model.
+They are off by default until they read vLLM's weights in place; their switches at `1` turn them on, and
+vLLM's startup log lists them with the reason. On gfx1201 GPTQ and Quark read in place and stay on.
+
 ## 0.9.21
 
 hk-dsl 0.9.21: `pip install hk-dsl && vllm serve` on an RDNA image no longer pulls aiter into the engine

@@ -10487,6 +10487,7 @@
 "RAISED": {},
 "ROLES": {},
 "SPLIT": {},
+"_QUARK_HAS": {},
 "_checker": {
 "params": [
 "name"
@@ -10498,6 +10499,11 @@
 "problem"
 ]
 },
+"_flat": {
+"params": [
+"src"
+]
+},
 "_gfx950": {
 "params": []
 },
@@ -10505,6 +10511,11 @@
 "params": [
 "src",
 "params"
+]
+},
+"_module_or_none": {
+"params": [
+"home"
 ]
 },
 "_params": {
@@ -10559,7 +10570,13 @@
 "gather_sgld_ditnorm": {
 "params": []
 },
+"gather_sgld_h3vae": {
+"params": []
+},
 "gather_sgld_linear": {
+"params": []
+},
+"gather_sgld_patchembed": {
 "params": []
 },
 "gather_sgld_qknorm": {
@@ -10650,7 +10667,17 @@
 "f"
 ]
 },
+"judge_sgld_h3vae": {
+"params": [
+"f"
+]
+},
 "judge_sgld_linear": {
+"params": [
+"f"
+]
+},
+"judge_sgld_patchembed": {
 "params": [
 "f"
 ]
@@ -10757,6 +10784,11 @@
 ]
 },
 "os": {},
+"quark_facts_of": {
+"params": [
+"cls"
+]
+},
 "record": {
 "params": [
 "routes"
@@ -11454,12 +11486,16 @@
 "DITNORM_HOME": {},
 "DITNORM_STATS": {},
 "ENV": {},
+"H3VAE_HOME": {},
+"H3VAE_STATS": {},
 "LINEAR_BIAS": {},
 "LINEAR_HOME": {},
 "LINEAR_STATS": {},
 "List": {},
 "MARGIN": {},
 "MIN_M": {},
+"PATCHEMBED_HOME": {},
+"PATCHEMBED_STATS": {},
 "Path": {},
 "QKNORM_STATS": {},
 "QWEN21_HOME": {},
@@ -11470,10 +11506,12 @@
 "VAE_STATS": {},
 "_BOOT": {},
 "_DITNORM_ORIG": {},
+"_H3VAE_ORIG": {},
 "_LAST": {},
 "_LINEAR_ORIG": {},
 "_OFF": {},
 "_OPS": {},
+"_PATCHEMBED_ORIG": {},
 "_PTH": {},
 "_QKNORM_ORIG": {},
 "_ROPE_ORIG": {},
@@ -11482,6 +11520,12 @@
 "_bucket": {
 "params": [
 "m"
+]
+},
+"_decide": {
+"params": [
+"key",
+"measure"
 ]
 },
 "_ditnorm_engine": {
@@ -11516,6 +11560,13 @@
 "sched"
 ]
 },
+"_h3vae_fits": {
+"params": [
+"conv",
+"x",
+"kw"
+]
+},
 "_hk_linear": {
 "params": [
 "x",
@@ -11537,6 +11588,11 @@
 "bias"
 ]
 },
+"_patchembed_fits": {
+"params": [
+"mod"
+]
+},
 "_qknorm_fits": {
 "params": [
 "x",
@@ -11555,6 +11611,11 @@
 "_rope_tables": {
 "params": [
 "rope"
+]
+},
+"_rows_of": {
+"params": [
+"a"
 ]
 },
 "_vec": {
@@ -11579,7 +11640,13 @@
 "apply_ditnorm": {
 "params": []
 },
+"apply_h3vae": {
+"params": []
+},
 "apply_linear": {
+"params": []
+},
+"apply_patchembed": {
 "params": []
 },
 "apply_qknorm": {
@@ -11589,6 +11656,9 @@
 "params": []
 },
 "apply_vaeconv": {
+"params": []
+},
+"decisions_file": {
 "params": []
 },
 "install": {
@@ -11605,7 +11675,13 @@
 "revert_ditnorm": {
 "params": []
 },
+"revert_h3vae": {
+"params": []
+},
 "revert_linear": {
+"params": []
+},
+"revert_patchembed": {
 "params": []
 },
 "revert_qknorm": {
@@ -11829,6 +11905,62 @@
 },
 "sys": {}
 },
+"hk.integration.support": {
+"ARCHES": {},
+"Dict": {},
+"ENGINE_MIN": {},
+"List": {},
+"Optional": {},
+"ROCM_MIN": {},
+"TORCH_MIN": {},
+"Tuple": {},
+"_tuple": {
+"params": [
+"v"
+]
+},
+"_version": {
+"params": [
+"dist"
+]
+},
+"annotations": {},
+"check": {
+"params": [
+"engine",
+"arch"
+]
+},
+"off_line": {
+"params": [
+"engine_name",
+"problems",
+"pid"
+]
+},
+"os": {},
+"re": {},
+"rocm_version": {
+"params": []
+},
+"source_build": {
+"params": [
+"v"
+]
+},
+"summary": {
+"params": [
+"engine_name",
+"version",
+"seen",
+"on",
+"off",
+"env_of",
+"pid",
+"held"
+]
+}
+},
 "hk.integration.switches": {
 "DISABLE": {},
 "Decision": {
@@ -11853,6 +11985,7 @@
 "engine": null,
 "env": null,
 "evidence": null,
+"held_off": null,
 "name": null,
 "part": null,
 "what": null
@@ -13107,8 +13240,11 @@
 }
 },
 "hk.integration.vllm_norm": {
+"ADD": {},
+"COMPILED": {},
 "Callable": {},
 "Counter": {},
+"NORM": {},
 "Optional": {},
 "STATS": {},
 "Tuple": {},
@@ -13118,10 +13254,34 @@
 "_compiling": {
 "params": []
 },
+"_define": {
+"params": []
+},
+"_fake_add": {
+"params": [
+"x",
+"residual",
+"weight",
+"eps"
+]
+},
+"_fake_norm": {
+"params": [
+"x",
+"weight",
+"eps"
+]
+},
+"_route": {
+"params": [
+"orig"
+]
+},
 "annotations": {},
 "apply": {
 "params": []
 },
+"engine": {},
 "revert": {
 "params": []
 },
@@ -13543,10 +13703,22 @@
 "Callable": {},
 "Counter": {},
 "HYBRID": {},
+"MODULE": {},
 "Optional": {},
 "PATCH": {},
 "REFUSED": {},
 "STATS": {},
+"_FINDER": {},
+"_Finder": {
+"methods": {
+"find_spec": [
+"self",
+"name",
+"path",
+"target"
+]
+}
+},
 "_ORIG_APPLY": {},
 "_ORIG_PWAL": {},
 "_common": {},
@@ -13570,6 +13742,17 @@
 "cu"
 ]
 },
+"_patch_module": {
+"params": [
+"qs"
+]
+},
+"_unhook": {
+"params": []
+},
+"_what": {
+"params": []
+},
 "_why_not": {
 "params": [
 "self"
@@ -13588,6 +13771,7 @@
 ]
 },
 "engine": {},
+"os": {},
 "process_weights_after_loading": {
 "params": [
 "self",
@@ -13617,9 +13801,13 @@
 "revert": {
 "params": []
 },
+"source_path": {
+"params": []
+},
 "status": {
 "params": []
 },
+"sys": {},
 "vllm_gptq": {}
 },
 "hk.integration.vllm_sparse_mla": {
@@ -17953,6 +18141,7 @@
 "_FALLBACK_CAP": {},
 "_K3": {},
 "_K3_FITS": {},
+"_OP": {},
 "_OPS": {},
 "_PATCHED": {},
 "_RUNS": {},
@@ -17961,11 +18150,28 @@
 "_VERDICTS": {},
 "_VERDICT_CAP": {},
 "__all__": {},
+"_attention": {
+"params": [
+"query",
+"key",
+"value",
+"is_causal",
+"scale"
+]
+},
 "_attn": {},
+"_bnhd_empty": {
+"params": [
+"q"
+]
+},
 "_bnhd_views": {
 "params": [
 "*ts"
 ]
+},
+"_compiled_op": {
+"params": []
 },
 "_k3_fits": {
 "params": [

@@ -79,7 +79,8 @@ def off_line(engine_name: str, problems: List[str], pid: int) -> str:
 
 
 def summary(engine_name: str, version: str, seen: Dict[str, str], on: List[str],
-            off: List[str], env_of: Dict[str, str], pid: int) -> List[str]:
+            off: List[str], env_of: Dict[str, str], pid: int,
+            held: Optional[List[Tuple[str, str]]] = None) -> List[str]:
     """The startup summary of an enabled plugin: what runs, and how to turn it off."""
     stack = ", ".join(f"{k} {v}" for k, v in seen.items())
     lines = [f"[hk] ===== hk-dsl {version} in {engine_name} ({stack}) (pid {pid}) =====",
@@ -87,4 +88,6 @@ def summary(engine_name: str, version: str, seen: Dict[str, str], on: List[str],
              + (f"; OFF: {', '.join(off)}" if off else "")]
     switches_ = ", ".join(f"{env_of[r]}=0" for r in on if env_of.get(r))
     lines.append(f"[hk] turn hk off: HK_DISABLE=1; one route off: {switches_ or 'n/a'}")
+    if held:
+        lines.append("[hk] off by default here: " + "; ".join(f"{n} ({why})" for n, why in held))
     return lines

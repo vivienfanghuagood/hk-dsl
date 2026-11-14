@@ -35,19 +35,19 @@ def on(env=None, gpu="gfx950", engine=None):
 # -- the defaults ------------------------------------------------------------------------------
 
 
-def test_on_by_default_on_gfx950_is_k1_k2_the_index_launch_sparse_mla_and_int4():
-    assert on() == {"vllm_mxfp8", "vllm_moe_a8w4", "vllm_dsv41_index", "vllm_sparse_mla", "vllm_int4"}
+def test_on_by_default_on_gfx950_is_k1_k2_the_index_launch_and_sparse_mla():
+    assert on() == {"vllm_mxfp8", "vllm_moe_a8w4", "vllm_dsv41_index", "vllm_sparse_mla"}
 
 
 def test_on_by_default_on_gfx1100_is_every_route_validated_there():
-    assert on(gpu="gfx1100") == {"vllm_int4", "vllm_gptq", "vllm_quark", "vllm_gemm", "vllm_moe", "vllm_sdpa",
+    assert on(gpu="gfx1100") == {"vllm_gemm", "vllm_gptq", "vllm_moe", "vllm_sdpa",
                                  "sglang_linear", "sglang_moe", "sglang_norm", "sgld_attn",
                                  "sgld_linear", "sgld_vaeconv", "sgld_rope", "sgld_qknorm", "sgld_ditnorm",
                                  "sdpa_k3", "vllm_prefill", "vllm_moe_wna16", "vllm_norm"}
 
 
 def test_on_by_default_on_gfx1201_is_every_route_validated_there():
-    assert on(gpu="gfx1201") == {"vllm_gemm", "vllm_gptq", "vllm_quark", "vllm_int4", "vllm_moe", "vllm_moe_wna16",
+    assert on(gpu="gfx1201") == {"vllm_gemm", "vllm_gptq", "vllm_quark", "vllm_moe", "vllm_moe_wna16",
                                  "vllm_prefill", "vllm_norm", "sgld_attn", "sgld_vaeconv", "sgld_rope"}
 
 
@@ -180,7 +180,7 @@ def plugin(clean):
 def test_the_vllm_plugin_applies_the_defaults_with_nothing_set(plugin, capsys):
     applied, _ = plugin
     _vllm_plugin.register()
-    assert applied == ["vllm_int4", "vllm_moe_a8w4", "vllm_mxfp8", "vllm_dsv41_index", "vllm_sparse_mla"]
+    assert applied == ["vllm_moe_a8w4", "vllm_mxfp8", "vllm_dsv41_index", "vllm_sparse_mla"]
     out = capsys.readouterr().out
     assert "[hk] vLLM routes on: " in out and "default on (gfx950)" in out
 
@@ -198,7 +198,7 @@ def test_the_vllm_plugin_leaves_out_a_route_at_0(plugin, monkeypatch):
     applied, _ = plugin
     monkeypatch.setenv("HK_VLLM_MOE_A8W4", "0")
     _vllm_plugin.register()
-    assert applied == ["vllm_int4", "vllm_mxfp8", "vllm_dsv41_index", "vllm_sparse_mla"]
+    assert applied == ["vllm_mxfp8", "vllm_dsv41_index", "vllm_sparse_mla"]
 
 
 def test_hk_vllm_sparse_mla_0_turns_the_sparse_mla_route_off(plugin, monkeypatch):
@@ -227,15 +227,15 @@ def test_a_broken_contract_turns_off_that_route_only_with_one_warning(plugin, ca
 
     monkeypatch.setattr(contract, "check_each", check_each)
     _vllm_plugin.register()
-    assert applied == ["vllm_int4", "vllm_mxfp8", "vllm_dsv41_index", "vllm_sparse_mla"]
-    assert seen == [["vllm_dsv41_index", "vllm_int4", "vllm_moe_a8w4", "vllm_mxfp8", "vllm_sparse_mla"]]
+    assert applied == ["vllm_mxfp8", "vllm_dsv41_index", "vllm_sparse_mla"]
+    assert seen == [["vllm_dsv41_index", "vllm_moe_a8w4", "vllm_mxfp8", "vllm_sparse_mla"]]
     cap = capsys.readouterr()
     lines = [x for x in cap.err.splitlines() if x.strip()]
     assert len(lines) == 1 and lines[0].startswith(
         "[hk] WARNING: vllm: route vllm_moe_a8w4 OFF -- engine contract FAILED")
     assert "gate_mode" in lines[0] and "HK_VLLM_MOE_A8W4=0" in lines[0]
     assert "other routes in this engine are unaffected" in lines[0]
-    assert "[hk] vLLM routes on: " in cap.out and "vllm_int4 (" in cap.out
+    assert "[hk] vLLM routes on: " in cap.out and "vllm_mxfp8 (" in cap.out
     assert "vllm_moe_a8w4 (" not in cap.out and "OFF: vllm_moe_a8w4" in cap.out
 
 
@@ -245,8 +245,8 @@ def test_every_contract_broken_leaves_vllm_stock_and_says_so(plugin, capsys, mon
     _vllm_plugin.register()
     assert applied == []
     cap = capsys.readouterr()
-    assert len([x for x in cap.err.splitlines() if x.startswith("[hk] WARNING")]) == 5
-    assert "no route applied (5 off, see the warnings), stock" in cap.out
+    assert len([x for x in cap.err.splitlines() if x.startswith("[hk] WARNING")]) == 4
+    assert "no route applied (4 off, see the warnings), stock" in cap.out
 
 
 def test_a_route_that_raises_is_off_and_the_others_stay_on(plugin, capsys, monkeypatch):
@@ -257,7 +257,7 @@ def test_a_route_that_raises_is_off_and_the_others_stay_on(plugin, capsys, monke
 
     monkeypatch.setitem(_vllm_plugin.APPLY, "vllm_mxfp8", boom)
     _vllm_plugin.register()
-    assert applied == ["vllm_int4", "vllm_moe_a8w4", "vllm_dsv41_index", "vllm_sparse_mla"]
+    assert applied == ["vllm_moe_a8w4", "vllm_dsv41_index", "vllm_sparse_mla"]
     assert reverted == []                                       # nothing undone
     cap = capsys.readouterr()
     err = cap.err.strip().splitlines()
@@ -447,3 +447,26 @@ def test_a_build_arch_list_is_not_the_gpu(no_arch_env, tmp_path):
     A.detect.cache_clear()
     mp.setenv("HK_ARCH", "gfx1100")                # HK_ARCH beats everything
     assert A.detect() == "gfx1100"
+
+
+
+# -- routes held off for a second weight copy (D-20261113-14) --------------------------------------
+
+
+@pytest.mark.parametrize("name,gpu", [("vllm_int4", "gfx1100"), ("vllm_int4", "gfx1201"), ("vllm_int4", "gfx950"),
+                                      ("vllm_quark", "gfx1100")])
+def test_a_route_holding_a_weight_copy_is_off_by_default_and_says_why(name, gpu):
+    d = switches.decide(name, {}, gpu)
+    assert not d.on and d.why.startswith(f"off by default on {gpu}: holds a second copy of the 4-bit weights")
+    assert f"{switches.ROUTES[name].env}=1 turns it on" in d.why
+    assert switches.decide(name, {switches.ROUTES[name].env: "1"}, gpu).on       # opting in still works
+
+
+def test_gptq_is_on_on_gfx1100_with_one_skinny_copy():
+    """vllm_gptq on gfx1100 holds one copy (repacked into the skinny layout, vLLM's freed): on again."""
+    assert switches.decide("vllm_gptq", {}, "gfx1100").on
+
+
+@pytest.mark.parametrize("name", ["vllm_gptq", "vllm_quark"])
+def test_gptq_and_quark_stay_on_where_they_read_vllms_layout_in_place(name):
+    assert switches.decide(name, {}, "gfx1201").on

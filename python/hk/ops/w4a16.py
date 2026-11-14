@@ -392,6 +392,29 @@ EXL_CHUNK = 8
 EXL_GEMV_MAX = 4
 
 
+#: ExLlama's nibble order in a skinny word: nibble i holds column 8w + EXL_ORDER[i] of the row.
+EXL_ORDER = (0, 2, 4, 6, 1, 3, 5, 7)
+
+
+def gptq_to_skinny(qweight, chunk: int = 2048):
+    """A GPTQ checkpoint's codes (int32 [K/8, N], packed along K, nibble i = row 8w + i) in vLLM's RDNA
+    skinny layout (int32 [N, K/8], nibble i of word w = column 8w + EXL_ORDER[i] -- what vLLM's
+    `pack_skinny_int4` gives and `exllama_matmul` / `exllama_large_matmul` read in place). N is done
+    `chunk` columns at a time, so the transient is a few hundred MB at most, not 8x the codes."""
+    import torch  # noqa: PLC0415
+
+    k8, n = qweight.shape
+    out = torch.empty((n, k8), device=qweight.device, dtype=torch.int32)
+    shifts = torch.arange(0, 32, 4, device=qweight.device, dtype=torch.int32)
+    for n0 in range(0, n, chunk):
+        q = qweight[:, n0:n0 + chunk]
+        codes = ((q.unsqueeze(1) >> shifts.view(1, 8, 1)) & 15).reshape(k8 * 8, -1)   # [K, c]
+        g = codes.t().reshape(-1, k8, 8).to(torch.int64)                               # [c, K/8, 8]
+        words = sum(g[:, :, col] << (4 * i) for i, col in enumerate(EXL_ORDER))
+        out[n0:n0 + chunk] = torch.where(words >= 2 ** 31, words - 2 ** 32, words).to(torch.int32)
+    return out
+
+
 def exllama_takes(m: int, n: int, k: int, group: int) -> bool:
     """Whether `exllama_matmul` runs an (M, N, K) GEMM: fp16, N a multiple of 16, K of
     64 * GEMV_WARPS, group a multiple of 32 (the small-batch form's needs; the WMMA form's are
@@ -439,11 +462,32 @@ def exllama_matmul(x, w_q, s, group: int, out=None):
 #: 2 or 4 rows and 128x64 with 4 on Qwen3.8-27B-GPTQ's shapes on gfx1201 (65-4096 tokens).
 LARGE_TILE = dict(block_m=128, block_n=128, warps=8, warp_rows=4)
 
+#: gfx1100's large-batch tile by batch size (M up to the key -> tile; None: above), measured on a W7900D on
+#: Qwen3.8-27B-GPTQ's shapes against vLLM's gptq_gemm_rdna3: 64x64 with 4 warps is best to 128 tokens (down
+#: projection at 128: 0.77x of vLLM with the 128x128 tile, 1.01x with it), 128x64 with 4 to 1024, 128x128 with 8
+#: above. Other arches keep LARGE_TILE.
+LARGE_TILES_AT = {"gfx1100": ((128, dict(block_m=64, block_n=64, warps=4, warp_rows=2)),
+                              (1024, dict(block_m=128, block_n=64, warps=4, warp_rows=2)),
+                              (None, LARGE_TILE))}
+
+
+def large_tile_for(m: int) -> dict:
+    """The large-batch form's tile for M tokens on this arch (LARGE_TILES_AT, else LARGE_TILE)."""
+    from ..target import current_arch  # noqa: PLC0415
+
+    for cap, tile in LARGE_TILES_AT.get(current_arch(), ()):
+        if cap is None or m <= cap:
+            return tile
+    return LARGE_TILE
+
 
 def exllama_large_takes(n: int, k: int, group: int) -> bool:
-    """Whether `exllama_large_matmul` takes an [N, K] W: N a multiple of the tile's block_n, K of
-    64, group a multiple of 16 dividing K."""
-    return n % LARGE_TILE["block_n"] == 0 and k % 64 == 0 and group % 16 == 0 and k % group == 0
+    """Whether `exllama_large_matmul` takes an [N, K] W at every M: N a multiple of every tile's
+    block_n on this arch, K of 64, group a multiple of 16 dividing K."""
+    from ..target import current_arch  # noqa: PLC0415
+
+    bns = {LARGE_TILE["block_n"]} | {t["block_n"] for _, t in LARGE_TILES_AT.get(current_arch(), ())}
+    return all(n % b == 0 for b in bns) and k % 64 == 0 and group % 16 == 0 and k % group == 0
 
 
 def exllama_large_matmul(x, w_q, s, group: int, out=None):
@@ -456,12 +500,14 @@ def exllama_large_matmul(x, w_q, s, group: int, out=None):
     n = w_q.shape[0]
     if out is None:
         out = torch.empty((m, n), device=x.device, dtype=torch.float16)
-    key = ("exl-large", group)
+    t = large_tile_for(m)
+    key = ("exl-large", group) + tuple(sorted(t.items()))
     if key not in _OPS:
         from ..runtime.torch_ext import launcher  # noqa: PLC0415
 
-        _OPS[key] = launcher(w4a16_large_kernel(f"w4a16_large_g{group}_exl", group=group,
-                                                **LARGE_TILE))
+        name = (f"w4a16_large_g{group}_exl" if t is LARGE_TILE else
+                f"w4a16_large_g{group}_exl_{t['block_m']}x{t['block_n']}w{t['warps']}r{t['warp_rows']}")
+        _OPS[key] = launcher(w4a16_large_kernel(name, group=group, **t))
     _OPS[key](x if x.is_contiguous() else x.contiguous(), w_q, s, out)
     return out
 

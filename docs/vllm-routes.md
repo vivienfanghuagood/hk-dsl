@@ -511,18 +511,24 @@ VLLM_USE_TRITON_AWQ=1 HK_PATCH_VLLM=1 HK_VLLM_INT4=1 \
 
 A 4-bit symmetric GPTQ checkpoint runs on RDNA3 through `AutoGPTQLinearMethod`
 with `RDNA3W4A16LinearKernel`, vLLM's HIP kernel on GPTQ's shuffled codes.
-`hk/integration/vllm_gptq.py` wraps that method the same way:
-- each layer gets hk's layout (`hk.ops.w4a16.repack_gptq`) *before* vLLM's
-  weight processing, which shuffles the codes in place. It is `load_w4`'s
-  symmetric form (`repack_gptq(..., symmetric=True)`): zero point 8, no
-  zero-times-scale tensor, scales in 16-row blocks;
-- `apply` calls the opaque op `hk_vllm::gptq_w4a16`, inside which batches of
-  1 to 64 tokens take hk's decode GEMM, and the rest vLLM's kernel. At one
-  token hk's is one kernel a call, where vLLM's dispatches a fill before each
-  GEMM.
+`hk/integration/vllm_gptq.py` wraps that method the same way, and holds **one
+copy** of each layer's weights:
+- **gfx1100** (`RDNA3W4A16LinearKernel`): at load the checkpoint's codes are
+  put in vLLM's RDNA skinny layout (`hk.ops.w4a16.gptq_to_skinny`: int32
+  [N, K/8] in ExLlama's nibble order, the layout gfx1201's hybrid kernel
+  keeps), the scales as [N, K/group], and vLLM's tensors are freed -- vLLM's
+  own weight processing never runs on the layer. `apply` calls the opaque op
+  `hk_vllm::gptq_w4a16_skinny`: every batch is hk's -- the small-batch form
+  (`exllama_matmul`) to 32 tokens for N >= 12288, 64 for the o / out
+  projections and 48 otherwise (`skinny_max_m`), the large-batch form
+  (`exllama_large_matmul`, its tile chosen by M on gfx1100) above; a non-fp16
+  input runs in fp16 and is cast back (counted).
+- **gfx1201** (`RDNAHybridW4A16LinearKernel`): vLLM's repack, then hk reads
+  its tensors in place for the batches vLLM would run on Triton.
 - Act-order checkpoints (`desc_act`), other quant types, layers on another
-  kernel and layers whose stored zero points are not 8 keep vLLM's path;
-  `vllm_gptq.REFUSED` counts them by reason.
+  kernel, shapes hk's forms do not take and layers whose stored zero points
+  are not 8 keep vLLM's path, untouched; `vllm_gptq.REFUSED` counts them by
+  reason.
 
 ```bash
 HK_PATCH_VLLM=1 vllm serve <a GPTQ-Int4 checkpoint> --dtype float16    # HK_VLLM_GPTQ=0 turns it off
