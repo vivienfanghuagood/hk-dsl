@@ -4,7 +4,18 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
-## Unreleased
+## 0.9.23
+
+hk-dsl 0.9.23: on gfx1100, hk's GPTQ route (`vllm_gptq`) holds one copy of the weights and serves every batch,
+so it is on by default again with the KV cache of stock vLLM. No change to the dialect (`hk-dialect-8`).
+
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels below are the same files.
+
+    pip install hk_dsl-0.9.23-cp312-cp312-manylinux_2_35_x86_64.whl
+
+### Changes
 
 - vLLM, `vllm_gptq` on gfx1100: one copy of the weights. A GPTQ layer's codes are repacked once at load into the
   RDNA skinny layout and vLLM's copy is freed, so the KV cache is stock's again (Qwen3.8-27B-GPTQ: 94k -> 288k
@@ -12,6 +23,8 @@ The next version's notes collect here until it is released.
   (ROCM_SEGMENTED_ATTN + TunableOp): TPOT 1.13-1.16x, TTFT 1.16-1.18x, real-mix output 1.21x
   (1.13x of it this route alone), GSM8K-200 equal.
   On by default on gfx1100 again.
+
+- CI: the gfx1100 CI pod pins its node with `spec.nodeName` (#401).
 
 ## 0.9.22
 
