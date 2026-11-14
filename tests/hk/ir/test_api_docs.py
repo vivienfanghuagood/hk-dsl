@@ -35,17 +35,17 @@ def test_every_documented_name_has_a_docstring():
 
 def test_since_marks_against_the_pypi_wheel():
     gen = _gen()
-    assert gen.PYPI == "0.9.22" and gen.BASELINE.name == "api_baseline_0.9.22.json"
-    # 0.9.22's additions are in the 0.9.22 wheel: no mark left on them
+    assert gen.PYPI == "0.9.23" and gen.BASELINE.name == "api_baseline_0.9.23.json"
+    # 0.9.23's additions are in the 0.9.23 wheel: no mark left on them
     hk_md = (REPO / "docs" / "api" / "hk.md").read_text()
     section = hk_md.split("### `hk.kernel`", 1)[1].split("###", 1)[0]
-    assert "after 0.9.22" not in section          # max_occupancy= is in 0.9.22
+    assert "after 0.9.23" not in section          # max_occupancy= is in 0.9.23
     ops_md = (REPO / "docs" / "api" / "hk.ops.md").read_text()
     section = ops_md.split("### `hk.ops.scaled_mm`", 1)[1].split("###", 1)[0]
-    assert "after 0.9.22" not in section          # #76 is in 0.9.22
+    assert "after 0.9.23" not in section          # #76 is in 0.9.23
     for page in (REPO / "docs" / "api").glob("*.md"):
-        assert "after 0.9.21" not in page.read_text(), page.name   # the old baseline's marks
-    # what lands after 0.9.22 is marked against the 0.9.22 wheel
+        assert "after 0.9.22" not in page.read_text(), page.name   # the old baseline's marks
+    # what lands after 0.9.23 is marked against the 0.9.23 wheel
     base = gen.load_baseline()
     import hk
 
@@ -53,9 +53,9 @@ def test_since_marks_against_the_pypi_wheel():
     base["hk"]["kernel"] = {"params": [p for p in base["hk"]["kernel"]["params"]
                                        if p not in ("placement", "max_occupancy")]}
     since = gen.Since(base)
-    assert since.mark("hk", "map_cpp", hk.map_cpp) == "*New after 0.9.22*"
+    assert since.mark("hk", "map_cpp", hk.map_cpp) == "*New after 0.9.23*"
     assert since.mark("hk", "kernel", hk.kernel) == \
-        "*Changed after 0.9.22*: new parameters `max_occupancy`, `placement`"
+        "*Changed after 0.9.23*: new parameters `max_occupancy`, `placement`"
     assert since.mark("hk", "iota", hk.iota) == ""
     index = (REPO / "docs" / "api" / "README.md").read_text()
     if gen.RELEASE:      # a release PR: the release that has the marked names
