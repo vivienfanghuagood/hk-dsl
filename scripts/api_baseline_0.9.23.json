@@ -12663,6 +12663,10 @@
 "Optional": {},
 "PATCH": {},
 "REFUSED": {},
+"SKINNY": {},
+"SKINNY_ARCHES": {},
+"SKINNY_LAYERS": {},
+"SKINNY_MAX_M": {},
 "STATS": {},
 "_GEMM_ARGS": {},
 "_GEMM_PLAN": {},
@@ -12694,10 +12698,24 @@
 "cu"
 ]
 },
+"_fake_skinny": {
+"params": [
+"x",
+"w_q",
+"w_s",
+"group"
+]
+},
 "_gemm_plan": {
 "params": []
 },
 "_hybrid_pwal": {
+"params": [
+"self",
+"layer"
+]
+},
+"_skinny_pwal": {
 "params": [
 "self",
 "layer"
@@ -12764,6 +12782,14 @@
 "cu"
 ]
 },
+"gptq_w4a16_skinny": {
+"params": [
+"x",
+"w_q",
+"w_s",
+"group"
+]
+},
 "hybrid_why": {
 "params": [
 "kernel",
@@ -12787,6 +12813,18 @@
 },
 "revert": {
 "params": []
+},
+"skinny_max_m": {
+"params": [
+"n",
+"k"
+]
+},
+"skinny_why": {
+"params": [
+"layer",
+"group"
+]
 },
 "status": {
 "params": []
@@ -18418,10 +18456,12 @@
 "Dict": {},
 "EXL_CHUNK": {},
 "EXL_GEMV_MAX": {},
+"EXL_ORDER": {},
 "GEMV_ARCHES": {},
 "GEMV_MAX_M": {},
 "GEMV_WARPS": {},
 "LARGE_TILE": {},
+"LARGE_TILES_AT": {},
 "MAX_TOKENS": {},
 "Optional": {},
 "SCHEDULES": {},
@@ -18552,6 +18592,12 @@
 "dtype"
 ]
 },
+"gptq_to_skinny": {
+"params": [
+"qweight",
+"chunk"
+]
+},
 "hk": {},
 "i32": {},
 "kernel_for": {
@@ -18574,6 +18620,11 @@
 "zs",
 "group",
 "out"
+]
+},
+"large_tile_for": {
+"params": [
+"m"
 ]
 },
 "matmul": {
