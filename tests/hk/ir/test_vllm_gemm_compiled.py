@@ -130,12 +130,18 @@ def test_the_4bit_routes_apply_writes_nothing_vllms_guard_refuses(monkeypatch, r
     import types
 
     mod = importlib.import_module(f"hk.integration.{route}")
-    monkeypatch.setattr(mod, "PATCH", lambda x, *rest: x @ rest[-4].T)   # x @ hk_qw.T, a stand-in
     layer = torch.nn.Module()
-    for name, t in (("qweight", torch.zeros(1)), ("scales", torch.zeros(1)),
-                    ("qzeros", torch.zeros(1)), ("hk_qw", torch.randn(N, K)),
-                    ("hk_s", torch.zeros(1)), ("hk_zs", torch.zeros(1))):
+    if route == "vllm_gptq":                # one copy, hk's: the skinny op (x @ w_q.T, a stand-in)
+        monkeypatch.setattr(mod, "SKINNY", lambda x, w_q, w_s, group: x @ w_q.T)
+        params = (("hk_skinny_q", torch.randn(N, K)), ("hk_skinny_s", torch.zeros(1)))
+    else:                                   # x @ hk_qw.T, a stand-in
+        monkeypatch.setattr(mod, "PATCH", lambda x, *rest: x @ rest[-4].T)
+        params = (("qweight", torch.zeros(1)), ("scales", torch.zeros(1)),
+                  ("qzeros", torch.zeros(1)), ("hk_qw", torch.randn(N, K)),
+                  ("hk_s", torch.zeros(1)), ("hk_zs", torch.zeros(1)))
+    for name, t in params:
         layer.register_parameter(name, torch.nn.Parameter(t, requires_grad=False))
+    ref_w = layer.hk_skinny_q if route == "vllm_gptq" else layer.hk_qw
     method = types.SimpleNamespace(quant_config=types.SimpleNamespace(group_size=128),
                                    kernel=types.SimpleNamespace(w_q_name="qweight",
                                                                 w_s_name="scales",
@@ -153,4 +159,4 @@ def test_the_4bit_routes_apply_writes_nothing_vllms_guard_refuses(monkeypatch, r
     x = torch.randn(2, 3, K)
     out, refused = _compile_under_vllms_guard(_Quantized(), x)
     assert refused == []
-    torch.testing.assert_close(out, x @ layer.hk_qw.T)
+    torch.testing.assert_close(out, x @ ref_w.T)

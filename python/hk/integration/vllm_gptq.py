@@ -6,17 +6,18 @@ On RDNA3, vLLM runs a 4-bit symmetric GPTQ checkpoint through
 (`ops.gptq_gemm_rdna3`) on GPTQ's shuffled codes. The patch wraps the method's
 two entry points:
 
-  * `process_weights_after_loading` writes hk's symmetric layout of the codes
-    (`hk.ops.w4a16.repack_gptq(..., symmetric=True)`: codes and scales in
-    16-row blocks, no zero-times-scale) *before* vLLM's runs, since vLLM's
-    shuffles the codes in place. It is a second copy of the codes, the size of
-    the first, kept so that every batch hk does not take still runs vLLM's
-    kernel on vLLM's own tensors. The zero point is 8, as
-    `RDNA3W4A16LinearKernel` takes it for uint4b8; a layer whose stored zero
-    points are not all 8 is refused (counted), not assumed.
-  * `apply` makes one call of the opaque custom op `hk_vllm::gptq_w4a16`.
-    Inside it the token count is a plain number, not a symbolic size. 16-bit
-    batches of `MIN_M` to 64 tokens go to hk's kernel, and the rest to vLLM's.
+  * `process_weights_after_loading`, on SKINNY_ARCHES (gfx1100), repacks the checkpoint's codes
+    once into vLLM's RDNA skinny layout (`hk.ops.w4a16.gptq_to_skinny`: int32 [N, K/8] in
+    ExLlama's nibble order, scales [N, K/group]) and frees vLLM's tensors: hk holds the layer's
+    only copy, and vLLM's own weight processing never runs on it. The zero point is 8, as
+    `RDNA3W4A16LinearKernel` takes it for uint4b8; a layer whose stored zero points are not all 8
+    is refused (counted), not assumed.
+  * `apply` makes one call of the opaque custom op `hk_vllm::gptq_w4a16_skinny`. Inside it the
+    token count is a plain number, not a symbolic size: the small-batch form to `skinny_max_m`
+    tokens, the large-batch form above -- every batch is hk's.
+
+An RDNA3W4A16LinearKernel layer on another arch keeps vLLM's path (counted): no route holds a
+second copy of the weights.
 
 On gfx1201 vLLM gives the layers `RDNAHybridW4A16LinearKernel` instead: its HIP skinny GEMM up to
 5 tokens (2 on a deep K such as down_proj, an LDS limit), its Triton GEMM above, 3.5-4x slower at
@@ -49,28 +50,14 @@ from . import _common, engine
 _ORIG_PWAL: Optional[Callable] = None
 _ORIG_APPLY: Optional[Callable] = None
 
-#: The fewest tokens hk's kernel takes. Its symmetric form (packed-fp16 decode,
-#: scales in 16-row blocks) is 1.04-1.12x vLLM's kernel at one token on every
-#: Qwen3.8-27B TP1 shape and 1.07-1.31x at 2-4 (tools/hk-bench/gptq_w4a16.py on a
-#: W7900D); the asymmetric form was 0.87-0.99x at one token, hence 4 before.
+#: The fewest tokens hk's symmetric decode form takes where a route keeps vLLM's kernel for the
+#: rest (vllm_quark on RDNA3W4A16LinearKernel): 1.04-1.12x vLLM's kernel at one token on every
+#: Qwen3.8-27B TP1 shape and 1.07-1.31x at 2-4 (tools/hk-bench/gptq_w4a16.py on a W7900D).
 MIN_M = 1
 
 #: Layers left on vLLM's path, by reason.
 REFUSED: Counter = Counter()
 
-
-def _fake(x, w_q, w_zp, w_s, g_idx, hk_qw, hk_s, hk_zs, group):
-    return x.new_empty((x.shape[0], hk_qw.shape[0]))
-
-
-PATCH = engine.Op(
-    "hk_vllm::gptq_w4a16",
-    "gptq_w4a16(Tensor x, Tensor w_q, Tensor w_zp, Tensor w_s, Tensor? g_idx, Tensor hk_qw, "
-    "Tensor hk_s, Tensor hk_zs, int group) -> Tensor",
-    _fake, paths=("hk", "fallback"), graph="safe")
-
-#: Which way each call went; see `engine.Patch` for what a replay counts as.
-STATS = PATCH.stats
 
 _RDNA3, _HYBRID = "RDNA3W4A16LinearKernel", "RDNAHybridW4A16LinearKernel"
 #: Where hk takes RDNAHybridW4A16LinearKernel's layers, and the most tokens its decode forms take
@@ -175,26 +162,7 @@ def gptq_w4a16_skinny(x, w_q, w_s, group: int):
     return out if dtype == torch.float16 else out.to(dtype)
 
 
-def gptq_w4a16(x, w_q, w_zp, w_s, g_idx, hk_qw, hk_s, hk_zs, group: int):
-    """y = x @ W.T for a 4-bit GPTQ W held both ways: hk's kernel where it
-    takes the batch, vLLM's RDNA3 kernel on vLLM's tensors otherwise."""
-    import torch  # noqa: PLC0415
-
-    from ..ops import w4a16 as hk_w4  # noqa: PLC0415
-
-    m, k = x.shape
-    run = (hk_w4.plan(m, hk_qw.shape[0], k, group, x.dtype, True)
-           if x.dtype == hk_s.dtype and MIN_M <= m <= hk_w4.MAX_TOKENS * 16 else None)
-    if run is not None:
-        PATCH.count("hk")
-        out = torch.empty((m, hk_qw.shape[0]), device=x.device, dtype=hk_s.dtype)
-        run(x if x.is_contiguous() else x.contiguous(), hk_qw, hk_s, out)
-        return out
-    PATCH.count("fallback")
-    return _vllm_gptq(x, w_q, w_zp, w_s, g_idx)
-
-
-#: What this stand-in can pass to vLLM's `gptq_gemm_rdna3`, by its parameter names. vLLM builds
+#: What a stand-in can pass to vLLM's `gptq_gemm_rdna3` (vllm_quark's fallback), by its parameter names. vLLM builds
 #: differ: some take the act-order index `b_g_idx` (an empty tensor for a checkpoint without act
 #: order), some do not. The call is bound by name to whatever this build's signature is.
 _GEMM_ARGS = {"a": "x", "b_q_weight": "w_q", "b_qzeros": "w_zp", "b_scales": "w_s",
@@ -228,8 +196,8 @@ def _gemm_plan():
 
 
 def _vllm_gptq(x, w_q, w_zp, w_s, g_idx):
-    """RDNA3W4A16LinearKernel.apply_weights' own GEMM, for the batches hk leaves, called with
-    this vLLM's own parameters by name."""
+    """RDNA3W4A16LinearKernel.apply_weights' own GEMM, for the batches hk leaves (vllm_quark's
+    RDNA3 path), called with this vLLM's own parameters by name."""
     from vllm import _custom_ops as ops  # noqa: PLC0415
 
     have = {"x": x, "w_q": w_q, "w_zp": w_zp, "w_s": w_s, "g_idx": g_idx}
@@ -251,13 +219,15 @@ def _why_not(self) -> str:
     """'' if hk can hold this layer's weights, else why not."""
     c = self.quant_config
     kern = type(getattr(self, "kernel", None)).__name__
-    if kern == _HYBRID:
-        from ..target import current_arch  # noqa: PLC0415
+    from ..target import current_arch  # noqa: PLC0415
 
+    if kern == _HYBRID:
         if current_arch() not in HYBRID_ARCHES:
             return f"kernel {kern} on {current_arch()}"
     elif kern != _RDNA3:
         return f"kernel {kern}"
+    elif current_arch() not in SKINNY_ARCHES:
+        return f"kernel {kern} on {current_arch()}"
     if getattr(c, "desc_act", False):
         return "act-order (desc_act)"
     if str(getattr(c, "quant_type", "")) != "uint4b8":
@@ -271,68 +241,21 @@ def _why_not(self) -> str:
             return "this vLLM's rdna_hybrid_w4a16 has no MAX_SKINNY_BATCH_SIZE / MEDIUM_SKINNY_LIMIT"
         if c.group_size % 32:
             return f"group {c.group_size}"
-        return ""
-    plan, problem = _gemm_plan()
-    if problem:
-        return problem
     return ""
 
 
 def process_weights_after_loading(self, layer) -> None:
-    """hk's layout of the codes, then vLLM's (which shuffles them in place)."""
-    import torch  # noqa: PLC0415
-
-    from ..ops import w4a16 as hk_w4  # noqa: PLC0415
-
+    """hk's only copy of the layer (gfx1100) or vLLM's tensors read in place (gfx1201); a layer hk
+    refuses gets vLLM's own processing, untouched, and is counted."""
     why = _why_not(self)
     if not why and type(self.kernel).__name__ == _HYBRID:
         _hybrid_pwal(self, layer)
         return
-    if not why and type(self.kernel).__name__ == _RDNA3:
-        from ..target import current_arch  # noqa: PLC0415
-
-        if current_arch() in SKINNY_ARCHES:
-            _skinny_pwal(self, layer)
-            return
-    s = getattr(layer, "scales", None)
-    if not why and (s is None or s.dtype not in (torch.float16, torch.bfloat16)):
-        why = f"scales {getattr(s, 'dtype', None)}"
     if not why:
-        qw = layer.qweight.data                     # [K/8, N], codes packed along K
-        k8, n = qw.shape
-        if n % 16 or (k8 * 8) % 32:
-            why = f"shape {n}x{k8 * 8}"
-    if not why:
-        q = getattr(layer, "qweight", None)
-        if q is None or s is None:
-            why = "no qweight / scales on the layer"
-    if why:
-        REFUSED[why] += 1
-        _ORIG_PWAL(self, layer)
+        _skinny_pwal(self, layer)
         return
-    group = self.quant_config.group_size
-    # The stored zero points (GPTQ v1: one short), checked to be 8 -- vLLM's for uint4b8.
-    qz = getattr(layer, "qzeros", None)
-    qz = qz.data if qz is not None and qz.dim() == 2 else torch.full(
-        (k8 * 8 // group, n // 8), 0x77777777, device=qw.device, dtype=torch.int32)
-    try:
-        hq, hs, _ = hk_w4.repack_gptq(qw, qz, layer.scales.data, group, zero_offset=1,
-                                      dtype=layer.scales.dtype, symmetric=True)
-    except ValueError:
-        REFUSED["zero points not 8"] += 1
-        _ORIG_PWAL(self, layer)
-        return
+    REFUSED[why] += 1
     _ORIG_PWAL(self, layer)
-    w_q, w_s, w_zp, g_idx = _weights(self.kernel, layer)
-    plan, _ = _gemm_plan()
-    if w_q is None or w_s is None or w_zp is None or (
-            any(n == "b_g_idx" for n, _ in plan) and g_idx is None):
-        REFUSED["vLLM's kernel holds no zero points / g_idx here"] += 1
-        return                              # vLLM's layer, untouched: its own apply runs
-    layer.hk_qw = torch.nn.Parameter(hq, requires_grad=False)
-    layer.hk_s = torch.nn.Parameter(hs, requires_grad=False)
-    # the op's schema keeps a zs slot; the symmetric form reads none
-    layer.hk_zs = torch.nn.Parameter(hs.new_empty(0), requires_grad=False)
 
 
 def skinny_why(layer, group: int) -> str:
@@ -454,14 +377,7 @@ def apply(self, layer, x, bias=None):
         if bias is not None:
             out.add_(bias)
         return out.reshape(*x.shape[:-1], w_q.shape[0])
-    if not hasattr(layer, "hk_qw"):
-        return _ORIG_APPLY(self, layer, x, bias)
-    w_q, w_s, w_zp, g_idx = _weights(self.kernel, layer)
-    out = PATCH(x.reshape(-1, x.shape[-1]), w_q, w_zp, w_s, g_idx, layer.hk_qw, layer.hk_s,
-                layer.hk_zs, self.quant_config.group_size)
-    if bias is not None:
-        out.add_(bias)
-    return out.reshape(*x.shape[:-1], layer.hk_qw.shape[0])
+    return _ORIG_APPLY(self, layer, x, bias)
 
 
 def apply_patch() -> str:
@@ -479,7 +395,6 @@ def apply_patch() -> str:
 
     from .vllm_gemm import _own_compile_cache  # noqa: PLC0415
 
-    PATCH.define(gptq_w4a16)
     SKINNY.define(gptq_w4a16_skinny)
     if read_skinny():                       # else its hybrid layers are refused, counted
         HYBRID.define(gptq_w4a16_hybrid)
@@ -512,6 +427,6 @@ def status() -> str:
     if _ORIG_APPLY is None:
         return "not patched"
     refused = ", ".join(f"{k}: {v}" for k, v in REFUSED.items())
-    hyb = f"; {HYBRID.summary()}" if HYBRID.defined else ""
-    hyb += f"; skinny layers {SKINNY_LAYERS[0]}: {SKINNY.summary()}" if SKINNY.defined else ""
-    return PATCH.summary() + hyb + (f"; layers left on vLLM's path: {refused}" if refused else "")
+    parts = [f"skinny layers {SKINNY_LAYERS[0]}: {SKINNY.summary()}"] if SKINNY.defined else []
+    parts += [HYBRID.summary()] if HYBRID.defined else []
+    return "; ".join(parts) + (f"; layers left on vLLM's path: {refused}" if refused else "")

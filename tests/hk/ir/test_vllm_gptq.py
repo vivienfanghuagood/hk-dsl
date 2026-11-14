@@ -8,16 +8,21 @@ from hk.integration import _common, vllm_gptq
 
 
 def test_the_op_declares_itself_graph_safe():
-    assert vllm_gptq.PATCH.graph == "safe"
-    assert set(vllm_gptq.PATCH.paths) == {"hk", "fallback"}
+    assert vllm_gptq.SKINNY.graph == "safe"
+    assert set(vllm_gptq.SKINNY.paths) == {"hk", "hk_large", "cast"}
 
 
 def test_the_fake_is_tokens_by_output_features():
     torch = pytest.importorskip("torch")
     x = torch.empty(5, 5120, device="meta", dtype=torch.float16)
-    qw = torch.empty(17408, 640, device="meta", dtype=torch.int32)
-    out = vllm_gptq._fake(x, None, None, None, None, qw, None, None, 32)
+    w_q = torch.empty(17408, 640, device="meta", dtype=torch.int32)
+    out = vllm_gptq._fake_skinny(x, w_q, None, 32)
     assert out.shape == (5, 17408)
+
+
+def test_the_two_copy_op_is_gone():
+    """D-20261113-14: no route holds vLLM's weights and a copy; the copy path's op is removed."""
+    assert not hasattr(vllm_gptq, "PATCH") and not hasattr(vllm_gptq, "gptq_w4a16")
 
 
 def test_apply_without_vllm_reports_rather_than_raises():
@@ -57,8 +62,12 @@ def _method(kernel=RDNA3W4A16LinearKernel, desc_act=False, qt="uint4b8", group=3
 
 @pytest.fixture(autouse=True)
 def _no_vllm_signature(monkeypatch):
-    """The plan for vLLM's gptq_gemm_rdna3 as the TheRock image's (no b_g_idx), without vLLM."""
+    """The plan for vLLM's gptq_gemm_rdna3 as the TheRock image's (no b_g_idx), without vLLM; and
+    gfx1100, where RDNA3W4A16LinearKernel's layers are taken."""
+    from hk import target
+
     monkeypatch.setattr(vllm_gptq, "_GEMM_PLAN", [vllm_gptq.plan_call(_gemm_therock)])
+    monkeypatch.setattr(target, "current_arch", lambda: "gfx1100")
 
 
 @pytest.mark.parametrize("method,why", [
@@ -74,24 +83,15 @@ def test_what_it_refuses_and_why(method, why):
     assert vllm_gptq._why_not(method) == why
 
 
-def test_batches_past_64_stay_on_vllms_kernel(monkeypatch):
-    """hk's kernel takes 1 (MIN_M) to 64 tokens; a bigger batch is vLLM's."""
-    torch = pytest.importorskip("torch")
-    if _common.importable("vllm"):
-        pytest.skip("vllm is installed here; the gpu tier covers the fallback")
-    from hk.ops import w4a16
+def test_rdna3_layers_on_another_arch_keep_vllms_path(monkeypatch):
+    """Only SKINNY_ARCHES hold the layer (one copy); elsewhere there is no copy path to fall to."""
+    from hk import target
 
-    assert vllm_gptq.MIN_M == 1
-    calls = []
-    monkeypatch.setattr(w4a16, "plan", lambda *a: calls.append(a) or None)
-    x = torch.empty(65, 5120, dtype=torch.float16)
-    s = torch.empty(1, dtype=torch.float16)
-    with pytest.raises(ImportError):          # the fallback is vLLM's op; no vLLM here
-        vllm_gptq.gptq_w4a16(x, None, None, None, None, torch.empty(17408, 640), s, s, 32)
-    assert calls == []                        # hk's plan is not even asked
+    monkeypatch.setattr(target, "current_arch", lambda: "gfx1101")
+    assert vllm_gptq._why_not(_method()) == "kernel RDNA3W4A16LinearKernel on gfx1101"
 
 
-# -- vLLM's gptq_gemm_rdna3 differs between builds; the fallback binds it by name -------------
+# -- vLLM's gptq_gemm_rdna3 differs between builds; vllm_quark's fallback binds it by name -----
 
 
 def _gemm_therock(a, b_q_weight, b_qzeros, b_scales, use_v2_format):
@@ -125,11 +125,9 @@ def test_vllms_gemm_is_bound_by_name_on_both_builds(fn, want, monkeypatch):
                     for n, v in want.items()}
 
 
-def test_a_build_with_an_unknown_parameter_refuses_its_layers_not_the_engine(monkeypatch):
+def test_a_build_with_an_unknown_parameter_is_reported():
     plan, problem = vllm_gptq.plan_call(_gemm_unknown)
     assert "b_perm" in problem
-    monkeypatch.setattr(vllm_gptq, "_GEMM_PLAN", [(plan, problem)])
-    assert vllm_gptq._why_not(_method()) == problem
 
 
 def test_the_contract_reads_only_the_entry_points_it_wraps(monkeypatch):
