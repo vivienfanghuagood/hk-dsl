@@ -572,7 +572,8 @@ add = T.elementwise(lambda a, b: a + b)
         rel("softmax", step("softmax", lambda: softmax(x)), torch.softmax(xf, -1), 2e-2)
         if ARCH == "gfx950" or {n} % 2 == 0:   # gfx1100: no one-byte runs (refused)
             q, s = step("quantize", lambda: quantize(x))
-            rel("quantize scale", s.view(-1), xf.abs().amax(-1).clamp_min(1e-12) / 127, 1e-5)
+            # the reference on the host: CI once read an all-zero device-built one back (11-12)
+            rel("quantize scale", s.view(-1), xf.cpu().abs().amax(-1).clamp_min(1e-12) / 127, 1e-5)
         """
         for m, n in ((1, 64), (3, 1000), (7, 4100), (1023, 64), (1025, 1032), (2, 70001),
                      (3, 151936))
@@ -600,18 +601,32 @@ def test_quant_stops_at_the_last_row():
     import hk
     from hk.ops import mxfp8
 
+    def both(x, packed):
+        # (kernel's q, s), (reference's q, s), all read back to the host
+        q, s = mxfp8.quant(x, packed=packed)
+        rq, rs = hk.mx.quant(x)
+        rs = hk.mx.pack_scales(rs) if packed else hk.mx.aiter_scales(rs)
+        torch.cuda.synchronize()
+        return (q.view(torch.uint8).cpu(), s.cpu()), (rq.view(torch.uint8).cpu(), rs.cpu())
+
+    def check(x, packed, m, k):
+        got, want = both(x, packed)
+        if all(torch.equal(a, b) for a, b in zip(got, want)):
+            return
+        # Seen once in CI and 1 in 243 fresh processes under concurrent GPU load, never in 58,000
+        # in-process repeats (11-14 triage): say which side moved, so the next one is attributable.
+        got2, want2 = both(x, packed)
+        diff = lambda a, b: [int((u != v).sum()) for u, v in zip(a, b)]     # [q bytes, s elements]
+        raise AssertionError(f"M{m} K{k} {'packed' if packed else 'aiter'}: kernel vs reference "
+                             f"{diff(got, want)}; rerun: kernel moved {diff(got, got2)}, "
+                             f"reference moved {diff(want, want2)}, kernel vs reference {diff(got2, want2)}")
+
     for m, k in [(1, 128), (63, 1280), (65, 5120), (2049, 5120), (2111, 4096)]:
         x = torch.randn(m, k, device="cuda").bfloat16()
-        q, s = step(f"quant packed M{m} K{k}", lambda: mxfp8.quant(x))
-        rq, rs = hk.mx.quant(x)
-        assert torch.equal(q.view(torch.uint8).cpu(), rq.view(torch.uint8).cpu()), (m, k)
-        assert torch.equal(s.cpu(), hk.mx.pack_scales(rs).cpu()), (m, k)
+        step(f"quant packed M{m} K{k}", lambda: check(x, True, m, k))
     for m, k in [(32, 1024), (2080, 5120)]:
         x = torch.randn(m, k, device="cuda").bfloat16()
-        q, s = step(f"quant aiter M{m} K{k}", lambda: mxfp8.quant(x, packed=False))
-        rq, rs = hk.mx.quant(x)
-        assert torch.equal(q.view(torch.uint8).cpu(), rq.view(torch.uint8).cpu()), (m, k)
-        assert torch.equal(s.cpu(), hk.mx.aiter_scales(rs).cpu()), (m, k)
+        step(f"quant aiter M{m} K{k}", lambda: check(x, False, m, k))
     """)
 
 

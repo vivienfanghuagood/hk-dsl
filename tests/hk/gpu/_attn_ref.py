@@ -34,8 +34,14 @@ import torch
 #: - ULPS, the worst row's error in bf16 ulps of its largest value: 2.31 / 1.32.
 #:   The miscomputing decode: 16-30.
 #: - TOL, max |got - ref| / max |ref|: 7.1e-3 / 5.3e-3.
+#: TOL is 2 bf16 ulps of the largest value at the bottom of its binade (2 * 2**-7). At 1e-2 it was
+#: tighter than ULPS: 1e-2 is 1.3 to 2.6 ulps of the largest value, depending on where that value sits
+#: in its binade, so a correct bf16 output could cross it. gfx950 CI did once (11-13,
+#: test_fenced prefill: 1.02e-2 at 1.63 ulps). Over 24,000 test_fenced paged checks on gfx950
+#: (11-14): max 7.85e-3, p99.9 6.5e-3, worst row 2.47 ulps. ULPS stays the bound that catches a
+#: wrong kernel (16-30 ulps above).
 ULPS = 4.0
-TOL = 1e-2
+TOL = 2.0 ** -6
 
 
 def attention64(q, k, v, causal=False, scale=None, q_chunk=1024):
