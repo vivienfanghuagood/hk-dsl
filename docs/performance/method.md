@@ -60,34 +60,62 @@ each rule guards against.
 ## The scorecard scenarios
 
 How each [scorecard](scorecard.md) scenario is measured. The page carries one small table per scenario; the
-ranges, the arms and what was discarded are here.
+arms, ranges, internal checks and costs are here.
 
 **Best stock.** For each scenario the stock arm is the best configuration found without changing code: the
 engine's backends and switches, environment variables, and offline tuning (TunableOp). A stock configuration
-counts only if it is lossless against plain stock on the scenario's quality check.
+counts only if it is lossless against plain stock on the scenario's quality check. On both scenarios below it is
+not vLLM's default on this GPU: the default is much slower (MiniCPM-V-4.7-35B: 32k first token 14.2 s instead
+of 4.40 s).
 
 ### MiniCPM-V-4.7-35B-A3B, vLLM, 2x Radeon PRO W7900D
 
 - **Hardware:** two Radeon PRO W7900D (gfx1100), tensor parallel 2, all-reduce over PCIe (no P2P).
-- **Engine:** the production serving image's vLLM (a ROCm 7.14 build); compile and CUDA graphs on, GPU memory
-  0.925, prefix caching on. The image is not public; [the script](../../scripts/scorecard/minicpmv-35b.sh)
-  takes the image as an argument.
+- **Engine:** vLLM 0.1.dev1+g10cc2f6ae (a ROCm 7 build of the production serving image, not public), torch 2.13;
+  compile and CUDA graphs on, GPU memory 0.925, prefix caching on. hk-dsl 0.9.20 from PyPI.
 - **Arms:**
   - plain stock: the production arguments, `TRITON_ATTN`, no TunableOp;
-  - best stock: plus `--attention-backend ROCM_SEGMENTED_ATTN` and TunableOp with 465 GEMMs tuned offline
-    under CUDA graphs (one file per rank). Lossless against plain stock: GSM8K-200 91.0% vs 90.0%,
-    synthetic-image VQA-100 100% vs 100%, McNemar p 0.63 on 300 paired items;
-  - hk: hk-dsl 0.9.20 with its default routes, plus the same TunableOp file.
-- **Starts:** best stock and hk alternate, two server starts each, the same driver, the cards locked.
-- **Loads and what each row is:**
-  - first token: one uncached 32k-token and one 128k-token prompt; ranges over the starts: best stock
-    4.39-4.42 s and 35.7-35.8 s, hk 3.67-3.68 s and 23.4 s;
-  - time per output token: a fixed number of concurrent requests on synthetic prompts; best stock 12.2 ms at
-    1 request and 31.4-33.3 ms at 8, hk 10.85 ms and 24.7-24.8 ms;
-  - quality: GSM8K-200, greedy; hk 91.5% and 89.5% on its two starts (stock 91.0% on both), McNemar p 1.0.
-  - The scenario was also checked on a replay of real traffic (arrival times, prefix chains and cancels); that
-    traffic is not public, so the page quotes no number from it.
+  - best stock: plus `--attention-backend ROCM_SEGMENTED_ATTN` and TunableOp with 465 GEMMs tuned offline under
+    CUDA graphs (one file per rank). Lossless against plain stock: GSM8K-200 91.0% vs 90.0%, synthetic-image
+    VQA-100 100% vs 100%, McNemar p 0.63 on 300 paired items;
+  - hk: hk-dsl's default routes on `TRITON_ATTN`, plus the same TunableOp file.
+- **Starts:** best stock and hk alternate, two server starts each, one driver, the cards locked for the run.
+- **Rows:**
+  - first token: one uncached 32k-token and one 128k-token prompt; ranges over the starts: best stock 4.39-4.42 s
+    and 35.7-35.8 s, hk 3.67-3.68 s and 23.4 s;
+  - time per output token: 1 and 8 concurrent requests. The table's numbers used prompts drawn from the
+    request-length mix of real traffic; the script uses synthetic 2k-token prompts with 256 output tokens, so its
+    absolute numbers differ a little (the ratios should hold). Best stock 12.2 ms at 1 request and 31.4-33.3 ms
+    at 8; hk 10.85 ms and 24.7-24.8 ms.
+- **Quality:** GSM8K-200, greedy: 91.0% for stock on both starts, 89.5% and 91.5% on hk's; McNemar p = 1.0.
+- **Also checked, not reproducible:** on a 25-minute replay of a real production peak (internal traffic), the
+  first token's p90 was 0.91 s for best stock against 0.47-0.67 s with hk.
 - **Where the time goes:** kernel traces of the best-stock arm: full attention is 32% of a 32k prefill and 66% of
-  a 128k one; the MoE is 45-48% of a decode step at 8-32 requests. hk's gains come from those two.
-- **Discarded:** a start whose server failed or whose cards were touched by another process (the lock is held for
-  the whole run); none were.
+  a 128k one; the MoE is 45-48% of a decode step at 8-32 requests.
+- **hk's costs:** a cold start about 60 s longer; a one-time hk compile (~38 s) on the first long prompt after an
+  empty hk cache. Warm restarts are level.
+- **Script check:** `SHORT=1 scripts/scorecard/minicpmv-35b.sh` with hk-dsl 0.9.21 (one start per arm, 32k first
+  token): 4.37 s vs 3.66 s, 1.20x -- the table's row.
+
+### Qwen3.8-27B GPTQ-Int4, vLLM, 1x Radeon PRO W7900D
+
+- **Hardware:** one Radeon PRO W7900D (gfx1100).
+- **Engine:** vLLM 0.33.0, torch 2.13.0 (HIP 7.2); `--dtype float16 --max-model-len 32768 --max-num-seqs 32
+  --gpu-memory-utilization 0.90 --enable-prefix-caching`, CUDA graphs. Model `palmfuture/Qwen3.8-27B-GPTQ-Int4`.
+- **hk:** hk-dsl main at the merge of #399 (0.9.22 plus #399: `vllm_gptq` on gfx1100 holds one copy of the
+  weights and serves every batch); it ships in 0.9.23. In 0.9.21 the same route kept a second copy of the weights
+  (KV cache 288k -> 94k tokens); 0.9.22 turned it off on this GPU.
+- **Arms:** best stock = `--attention-backend ROCM_SEGMENTED_ATTN` + offline TunableOp (tuned on this card) + CUDA
+  graphs; hk = hk-dsl's default routes on `TRITON_ATTN` + the same TunableOp file.
+- **Starts:** two campaigns of 2+2 alternating server starts on one card (same numbers within 0.3%); medians over
+  the starts. 0 errored requests.
+- **Rows not in the table:** time per output token at 4 requests 44.3 ms vs 38.2 ms (1.16x).
+- **Quality:** GSM8K-200, greedy: stock 91.0% and 91.5%, hk 91.5% and 91.0% on two runs each; McNemar p = 1.00.
+- **Isolating the int4 route** (both arms hk on `TRITON_ATTN`, `HK_VLLM_GPTQ=0` against `=1`): time per output
+  token 1.14x / 1.15x / 1.13x at 1 / 4 / 8 requests, first token 1.15x / 1.12x at 8k / 32k; so the decode gain is
+  all this route's.
+- **Also checked, not reproducible:** on a replay of 30 multi-turn sessions sampled from real traffic (internal), at
+  4 concurrent sessions, output throughput was 68.8 -> 83.4 tokens/s (1.21x; ~1.13x of it the int4 route) and
+  end-to-end p50 / p90 20.4 / 79.8 s -> 16.1 / 64.5 s.
+- **hk's costs:** the first hk start after an upgrade compiles the new kernels on its first long prompt (8k first
+  token 8.30 s on that start, 7.05 s warm).
