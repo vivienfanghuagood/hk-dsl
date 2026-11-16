@@ -84,8 +84,15 @@ default keeps the old boot, which needs `HK_SGLD=1`; run `install` again
   projections to the engine. Each shape is decided once, by timing hk against
   `F.linear` (hk must win by `MARGIN`, 3%), and the decision is pinned in
   hk's cache directory (`sgld_linear_<arch>_<gpu>.json` under `HK_CACHE_DIR`),
-  so every later process and every TP rank takes the same kernel and the same
-  seed gives the same image; delete the file to decide again;
+  so every later process takes the same kernel and the same seed gives the
+  same image; delete the file to decide again. With more than one rank
+  (sequence or tensor parallel, `--num-gpus` > 1) nothing is timed: a shape
+  takes its pinned decision, else the engine's GEMM, read once from that file
+  and so identical on every rank; each rank logs
+  `[hk] sglang-diffusion linear: N ranks: pinned decisions only ... (table <digest>, ...)`,
+  and the digests must match. (Timing a shape inside a 4-GPU SP forward, under a
+  lock every rank shares, deadlocked the ranks on a collective.) A wait for the
+  file's lock is bounded (`HK_SGLD_LOCK_S`, 300 s) and raises;
 - **vaeconv**: Wan's VAE conv3d (`WanCausalConv3d` of
   `sglang.multimodal_gen.runtime.models.vaes.wanvae`) as calls of 2 output
   frames, each the engine's own conv on a slice of the input. On gfx1100
