@@ -11491,6 +11491,7 @@
 "LINEAR_BIAS": {},
 "LINEAR_HOME": {},
 "LINEAR_STATS": {},
+"LOCK_TIMEOUT_S": {},
 "List": {},
 "MARGIN": {},
 "MIN_M": {},
@@ -11512,6 +11513,7 @@
 "_OFF": {},
 "_OPS": {},
 "_PATCHEMBED_ORIG": {},
+"_PINNED": {},
 "_PTH": {},
 "_QKNORM_ORIG": {},
 "_ROPE_ORIG": {},
@@ -11523,6 +11525,12 @@
 ]
 },
 "_decide": {
+"params": [
+"key",
+"measure"
+]
+},
+"_decision": {
 "params": [
 "key",
 "measure"
@@ -11580,6 +11588,12 @@
 "x"
 ]
 },
+"_lock": {
+"params": [
+"f",
+"path"
+]
+},
 "_measure": {
 "params": [
 "op",
@@ -11591,6 +11605,11 @@
 "_patchembed_fits": {
 "params": [
 "mod"
+]
+},
+"_pinned_only": {
+"params": [
+"key"
 ]
 },
 "_qknorm_fits": {
@@ -11710,6 +11729,9 @@
 "params": [
 "target"
 ]
+},
+"world_size": {
+"params": []
 }
 },
 "hk.integration.sglang_moe": {
@@ -12661,13 +12683,11 @@
 "HYBRID_MAX_M": {},
 "MIN_M": {},
 "Optional": {},
-"PATCH": {},
 "REFUSED": {},
 "SKINNY": {},
 "SKINNY_ARCHES": {},
 "SKINNY_LAYERS": {},
 "SKINNY_MAX_M": {},
-"STATS": {},
 "_GEMM_ARGS": {},
 "_GEMM_PLAN": {},
 "_HYBRID": {},
@@ -12676,19 +12696,6 @@
 "_RDNA3": {},
 "_SKINNY": {},
 "_common": {},
-"_fake": {
-"params": [
-"x",
-"w_q",
-"w_zp",
-"w_s",
-"g_idx",
-"hk_qw",
-"hk_s",
-"hk_zs",
-"group"
-]
-},
 "_fake_hybrid": {
 "params": [
 "x",
@@ -12760,19 +12767,6 @@
 "params": []
 },
 "engine": {},
-"gptq_w4a16": {
-"params": [
-"x",
-"w_q",
-"w_zp",
-"w_s",
-"g_idx",
-"hk_qw",
-"hk_s",
-"hk_zs",
-"group"
-]
-},
 "gptq_w4a16_hybrid": {
 "params": [
 "x",
