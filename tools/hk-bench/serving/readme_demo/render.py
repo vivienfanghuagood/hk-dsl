@@ -46,9 +46,9 @@ def pane(title, color, arm, t, out_max):
     return out
 
 
-def frame(stock, hk, t, out_max, caption):
-    left = pane("stock vLLM", RED, stock, t, out_max)
-    right = pane("vLLM + hk", CYAN, hk, t, out_max)
+def frame(stock, hk, t, out_max, caption, titles=("stock vLLM", "vLLM + hk")):
+    left = pane(titles[0], RED, stock, t, out_max)
+    right = pane(titles[1], CYAN, hk, t, out_max)
     rows = []
     for i in range(ROWS - 3):
         a = left[i] if i < len(left) else ""
@@ -79,6 +79,7 @@ def main():
     ap.add_argument("round", type=int)
     ap.add_argument("cast")
     ap.add_argument("--caption", required=True)
+    ap.add_argument("--titles", nargs=2, default=["stock vLLM", "vLLM + hk"], help="the two panes' titles")
     ap.add_argument("--hold", type=float, default=2.5)
     ap.add_argument("--fps", type=float, default=10)
     a = ap.parse_args()
@@ -94,7 +95,7 @@ def main():
         f.write(json.dumps({"version": 2, "width": W, "height": ROWS, "timestamp": 0,
                             "env": {"TERM": "xterm-256color", "SHELL": "/bin/sh"}}) + "\n")
         for t in times:
-            f.write(json.dumps([t, "o", frame(stock, hk, t, out_max, a.caption)]) + "\n")
+            f.write(json.dumps([t, "o", frame(stock, hk, t, out_max, a.caption, a.titles)]) + "\n")
 
 
 if __name__ == "__main__":

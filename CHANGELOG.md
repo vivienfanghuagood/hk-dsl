@@ -10,6 +10,9 @@ The next version's notes collect here until it is released.
   `repack_gptq` copy kept beside vLLM's tensors, unreachable on gfx1100 since 0.9.23. An RDNA3W4A16LinearKernel
   layer on an arch other than gfx1100 now keeps vLLM's path (counted in `vllm_gptq.REFUSED`) instead of a
   second copy. `vllm_quark`'s helpers (`plan_call`, `_vllm_gptq`, `MIN_M`) stay.
+- README: the Quick start is install, run, and the `[hk] vLLM routes on:` line that shows hk is on; SGLang,
+  Radeon Cloud and the switches moved to a Details section. The demo GIF is back, re-recorded on the 35B
+  scorecard scenario with CUDA graphs on both sides (`tools/hk-bench/serving/readme_demo/record_serve.py`).
 
 ## 0.9.23
 

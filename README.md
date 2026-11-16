@@ -15,32 +15,50 @@ in it, for RDNA and CDNA, with build-time checks against the errors that fail
 silently (spills, missing waits, MFMA hazards).
 [What it is and is not](docs/positioning.md).
 
+![The same 32,768-token prompt to MiniCPM-V-4.7-35B-A3B on two W7900D, stock vLLM with CUDA graphs (left) and vLLM with hk-dsl and CUDA graphs (right), 256 identical output tokens: first token after 4.35 s and 3.62 s, decode at 78 and 87 tokens/s](docs/assets/readme-demo.gif)
+
+*MiniCPM-V-4.7-35B-A3B on 2x Radeon PRO W7900D (tensor parallel 2), vLLM 0.1.dev1+g10cc2f6ae (ROCm 7), hk-dsl
+0.9.23. Both sides use CUDA graphs and the [scorecard](docs/performance/scorecard.md)'s setup: best stock vLLM
+(`ROCM_SEGMENTED_ATTN`, tuned TunableOp) against hk-dsl's default routes. They get the same 32,768-token prompt
+and produce the same 256 output tokens (greedy). Played at real speed: first token 4.35 s -> 3.62 s (1.20x),
+decode 78 -> 87 tokens/s (1.12x), the same in all 3 rounds recorded
+([how](tools/hk-bench/serving/readme_demo/README.md)).*
+
 ## Quick start
 
-**Faster vLLM and SGLang on Radeon.** One command, in the environment that
-runs your engine; hk's plugin loads by itself:
-
 ```bash
-pip install hk-dsl && vllm serve Qwen/Qwen3-8B                       # vLLM
-pip install hk-dsl && python3 -m sglang.launch_server --model-path Qwen/Qwen3-8B \
-    --attention-backend triton --disable-cuda-graph                 # SGLang (W7900 / RX 7900)
+pip install hk-dsl            # in the environment that runs vLLM, on a Radeon W7900 / RX 7900 or R9700 / RX 9070
+vllm serve Qwen/Qwen3-8B      # hk's plugin loads by itself
+# the log shows:  [hk] vLLM routes on: vllm_norm (default on (gfx1100)), vllm_gemm (default on (gfx1100)), ...
 ```
 
-**On Radeon Cloud,** pick the **vLLM · Stable** image (vLLM 0.33, ROCm 7.2), then run the line above. The
+That `[hk] vLLM routes on:` line means hk is on; `HK_DISABLE=1` gives you stock vLLM back, and SGLang, Radeon
+Cloud and the switches are under [Details](#details).
+
+## Details
+
+**SGLang** (W7900 / RX 7900): the plugin also loads by itself, and the log shows `[hk] SGLang routes on: ...`.
+
+```bash
+pip install hk-dsl && python3 -m sglang.launch_server --model-path Qwen/Qwen3-8B \
+    --attention-backend triton --disable-cuda-graph
+```
+
+**On Radeon Cloud,** pick the **vLLM · Stable** image (vLLM 0.33, ROCm 7.2), then run the Quick start. The
 **Base** image's vLLM (0.16) is older than hk supports: there hk says so in one line and stays off, and vLLM
 runs as stock. There is no SGLang image to pick yet.
 
-At startup the vLLM log shows hk's summary per process: hk's version and the stack it found, a
-`[hk] vLLM routes on: ...` line, and the switches that turn hk or one route off (SGLang prints
-`[hk] SGLang routes on: ...`). On an engine or GPU hk does not support (below), it prints one
-line saying so and stays off, and the engine runs as stock. `HK_DISABLE=1` gives you the stock
-engine back, which is how you see the difference on your own model
-([how](docs/vllm.md#see-the-difference-on-your-model)).
-No vLLM yet? On an R9700 one `docker run` does both: [hk in vLLM](docs/vllm.md#enable-hk-in-one-command). Each engine's page has the
-GPUs and models, how to check it worked, and troubleshooting:
-**[hk in vLLM](docs/vllm.md)** · **[hk in SGLang](docs/sglang.md)**.
+**What hk prints, and the switches.** At startup the vLLM log shows hk's summary per process: hk's version and
+the stack it found, the routes-on line, and the switches that turn hk or one route off. On an engine or GPU hk
+does not support (below), it prints one line saying so and stays off, and the engine runs as stock.
+`HK_DISABLE=1` gives you the stock engine back, which is how you see the difference on your own model
+([how](docs/vllm.md#see-the-difference-on-your-model)). No vLLM yet? On an R9700 one `docker run` does both:
+[hk in vLLM](docs/vllm.md#enable-hk-in-one-command). Each engine's page has the GPUs and models, how to check it
+worked, and troubleshooting: **[hk in vLLM](docs/vllm.md)** · **[hk in SGLang](docs/sglang.md)**.
 
-**Your first kernel.** `pip install hk-dsl`, plus ROCm's hipcc and a ROCm
+## Your first kernel
+
+`pip install hk-dsl`, plus ROCm's hipcc and a ROCm
 build of torch ([install](#install)). Write only the math; a template builds
 the kernel:
 

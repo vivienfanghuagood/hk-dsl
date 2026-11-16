@@ -11,7 +11,7 @@ container that has nothing of hk but the wheel and this script:
    checkout (a repository conftest would put python/ first and hide a broken wheel) or the mount.
    HK_INSTALL_TARGET=DIR (a shared host whose Python must not change: the gfx1100 CI pod) installs
    with `pip install --target DIR` instead, and every later step sees DIR alone on PYTHONPATH;
-2. the README's quick start, as written: its `my_kernels.py` block and its `python3 -m hk.check`
+2. the README's first kernel ("## Your first kernel"), as written: its `my_kernels.py` block and its `python3 -m hk.check`
    command, both read from README (so an edit that breaks the quick start fails here);
 3. one GPU test with an exact answer: attention with V all ones returns exactly 1.0.
 The JIT compile in steps 2 and 3 uses the image's own hipcc: a toolchain hk does not handle (the
@@ -36,16 +36,16 @@ def step(name, ok, detail=""):
 
 
 def quick_start(readme: str):
-    """(my_kernels.py source, the hk.check command) from README's "## Quick start" section."""
+    """(my_kernels.py source, the hk.check command) from README's "## Your first kernel" section."""
     text = open(readme, encoding="utf-8").read()
-    m = re.search(r"^## Quick start\n(.*?)(?=^## )", text, re.S | re.M)
+    m = re.search(r"^## Your first kernel\n(.*?)(?=^## )", text, re.S | re.M)
     if not m:
-        raise SystemExit("README has no '## Quick start' section")
+        raise SystemExit("README has no '## Your first kernel' section")
     blocks = re.findall(r"^```(\w+)\n(.*?)^```", m.group(1), re.S | re.M)
     code = next((b for lang, b in blocks if lang == "python" and "my_kernels.py" in b), None)
     cmd = next((b for lang, b in blocks if lang == "bash" and "hk.check" in b), None)
     if code is None or cmd is None:
-        raise SystemExit("README's quick start lacks the my_kernels.py block or the hk.check command")
+        raise SystemExit("README's first-kernel section lacks the my_kernels.py block or the hk.check command")
     return code, cmd.replace("\\\n", " ").strip()
 
 

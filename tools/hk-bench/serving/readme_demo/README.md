@@ -1,8 +1,29 @@
 # The README's demo GIF
 
-> **Not on the repository README for now (scorecard audit, 2026-11-11).** The recording's stock runs eager
-> (`enforce_eager`, MiniCPM-V-4.7's production setting), and stock with CUDA graphs is faster, so the GIF does not
-> compare hk with stock at its best. Re-record it against stock in graphs mode before putting it back.
+**The README's GIF** (2026-11-16) is the 35B scorecard scenario with CUDA graphs on both sides, recorded with
+`record_serve.py` (below). The rest of this page describes the earlier, in-process recorder.
+
+## The 35B recording (`record_serve.py`)
+
+MiniCPM-V-4.7-35B-A3B on 2x W7900D does not fit twice in one process, so each arm is its own `vllm serve`,
+started with [scripts/scorecard/minicpmv-35b.sh](../../../../scripts/scorecard/minicpmv-35b.sh)'s arguments
+(stock: `HK_DISABLE=1`, `ROCM_SEGMENTED_ATTN`; hk: `TRITON_ATTN`; CUDA graphs and the same TunableOp file on
+both). `record_serve.py ARM MODEL OUT/` sends two warm-up requests, then 3 rounds of the copy-the-log prompt below
+at exactly 32,768 tokens, each streaming 256 tokens (greedy, `ignore_eos`), and records when each token arrived
+and the token ids. `record_serve.py merge OUT/` pairs the arms into `demo.json`; `render.py` and agg then work
+as below:
+
+```bash
+python3 render.py out/demo.json 0 demo.cast --titles "stock vLLM, CUDA graphs" "vLLM + hk-dsl, CUDA graphs" \
+    --hold 4 --caption "2x Radeon PRO W7900D · MiniCPM-V-4.7-35B-A3B, TP2 · vLLM (ROCm 7) · hk-dsl 0.9.23 · real time"
+agg --font-size 14 --fps-cap 10 --idle-time-limit 20 --last-frame-duration 4 demo.cast demo.gif
+```
+
+The recording is `demo-w7900d-minicpm-v-4.7-35b-0.9.23.json` (prompt ids dropped to keep it small). All 3
+rounds had identical outputs. First token 4.35 s vs 3.62 s (1.20x), decode 77.6-78.0 vs 87.0-87.1 tokens/s
+(1.12x). The GIF plays round 0.
+
+## The earlier, in-process recorder (`record.py`)
 
 The GIF at the top of the repository's README shows one request served by stock vLLM and by vLLM with hk-dsl,
 on the same GPU, played side by side at real speed. Both sides get the same prompt and produce the same output.
