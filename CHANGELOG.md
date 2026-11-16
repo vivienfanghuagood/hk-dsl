@@ -6,6 +6,13 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+- SGLang-Diffusion, `sgld_linear`: with more than one rank (sequence or tensor parallel) a GEMM shape is no
+  longer timed at its first call. A rank timed it under a file lock all ranks share, on a stream waiting for a
+  collective the other ranks -- blocked on that lock -- never reached: a 4-GPU SP Qwen-Image 2.1 server hung at
+  warmup until NCCL's watchdog (600 s). Ranks now take the pinned decision or the engine's GEMM, identical on
+  every rank, and log the decisions table's digest; one process still times and pins. A wait for the lock is
+  bounded (`HK_SGLD_LOCK_S`) and raises. Regression test with 2 and 4 real ranks.
+
 - docs/vllm.md, troubleshooting: hk installed with `pip install --target` goes on `PYTHONPATH` by appending (some
   vLLM images set their own) and needs its `hk_dsl-*.dist-info` for vLLM's workers to load the plugin.
 - vLLM, `vllm_gptq`: the two-copy path is removed -- the `hk_vllm::gptq_w4a16` op, `gptq_w4a16()` and the

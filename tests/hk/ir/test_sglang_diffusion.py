@@ -111,3 +111,107 @@ def test_a_torn_decisions_file_is_decided_again(tmp_path, monkeypatch):
     monkeypatch.setattr(sd, "DECISIONS", {})
     assert sd._decide((1024, 64, 64, False), lambda: (True, "hk"))[0] is True
     assert "1024,64,64,0" in __import__("json").loads(f.read_text())
+
+
+# -- more than one rank: SGLang-Diffusion's sequence / tensor parallel workers ---------------------
+
+
+def test_with_ranks_nothing_is_timed_and_unpinned_shapes_keep_the_engine(tmp_path, monkeypatch):
+    """A 4-GPU SP Qwen-Image replica deadlocked: a rank timed a new shape under the decisions
+    file's lock while its stream waited on a collective the other ranks, blocked on that lock,
+    never reached. With ranks a decision is the pinned one, or the engine's GEMM -- never timed."""
+    import json
+
+    from hk.integration import sglang_diffusion as sd
+
+    f = tmp_path / "decisions.json"
+    f.write_text(json.dumps({"4096,3072,3072,0": [True, "hk (1.27x)"]}))
+    monkeypatch.setattr(sd, "decisions_file", lambda: f)
+    monkeypatch.setattr(sd, "DECISIONS", {})
+    monkeypatch.setattr(sd, "_PINNED", [])
+    monkeypatch.setattr(sd, "world_size", lambda: 4)
+
+    def never():
+        raise AssertionError("timed a shape with 4 ranks")
+
+    assert sd._decision((4096, 3072, 3072, False), never)[0] is True
+    assert sd._decision((2048, 1024, 4096, False), never) == (
+        False, "engine (unpinned; 4 ranks decide nothing at run time)")
+    assert json.loads(f.read_text()) == {"4096,3072,3072,0": [True, "hk (1.27x)"]}   # nothing written
+
+
+def test_a_held_lock_raises_instead_of_waiting(tmp_path, monkeypatch):
+    import fcntl
+
+    from hk.integration import sglang_diffusion as sd
+
+    f = tmp_path / "decisions.json"
+    monkeypatch.setattr(sd, "decisions_file", lambda: f)
+    monkeypatch.setattr(sd, "DECISIONS", {})
+    monkeypatch.setenv("HK_SGLD_LOCK_S", "0.2")
+    with open(f"{f}.lock", "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        with pytest.raises(RuntimeError, match="held by another process"):
+            sd._decide((1024, 64, 64, False), lambda: (True, "hk"))
+
+
+_RANK = r"""
+import json, os, sys
+from pathlib import Path
+import torch.distributed as dist
+from hk.integration import sglang_diffusion as sd
+
+rank, world, table, port = int(sys.argv[1]), int(sys.argv[2]), Path(sys.argv[3]), sys.argv[4]
+dist.init_process_group("gloo", init_method=f"tcp://127.0.0.1:{port}", rank=rank, world_size=world)
+sd.decisions_file = lambda: table
+timed = []
+
+def measure():
+    # what the old route did inside the forward: wait for the other ranks (their collective)
+    timed.append(1)
+    dist.barrier()
+    return True, "hk (timed)"
+
+for key in [(2048, 1024, 4096, False), (1024, 3072, 3072, False), (2048, 256, 4096, False)]:
+    sd._decision(key, measure)
+    dist.barrier()                       # the next collective of the forward: every rank reaches it
+print(json.dumps({"rank": rank, "timed": len(timed),
+                  "decisions": {",".join(map(str, k)): v[0] for k, v in sorted(sd.DECISIONS.items())}}))
+dist.destroy_process_group()
+"""
+
+
+@pytest.mark.parametrize("world", [2, 4])
+def test_sp_ranks_decide_identically_and_never_deadlock(tmp_path, world):
+    """The SP regression, with real ranks (gloo on CPU): each rank meets new GEMM shapes between
+    collectives, as SGLang-Diffusion's SP workers do, with one shape pinned in the shared file.
+    Every rank must finish, time nothing, and decide exactly what the others decide."""
+    pytest.importorskip("torch.distributed")
+    import json
+    import socket
+
+    table = tmp_path / "sgld_linear.json"
+    table.write_text(json.dumps({"1024,3072,3072,0": [True, "hk (1.27x)"]}))
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = str(s.getsockname()[1])
+    script = tmp_path / "rank.py"
+    script.write_text(_RANK)
+    env = dict(os.environ, WORLD_SIZE=str(world))
+    procs = [subprocess.Popen([sys.executable, str(script), str(r), str(world), str(table), port],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+             for r in range(world)]
+    outs = []
+    for p in procs:
+        try:
+            out, err = p.communicate(timeout=120)
+        except subprocess.TimeoutExpired:
+            for q in procs:
+                q.kill()
+            pytest.fail(f"{world} ranks hung deciding GEMM shapes (the SP deadlock)")
+        assert p.returncode == 0, err[-2000:]
+        outs.append(json.loads(out.strip().splitlines()[-1]))
+    assert all(o["timed"] == 0 for o in outs)
+    assert all(o["decisions"] == outs[0]["decisions"] for o in outs)
+    assert outs[0]["decisions"] == {"1024,3072,3072,False": True, "2048,1024,4096,False": False,
+                                    "2048,256,4096,False": False}

@@ -168,7 +168,7 @@ def _hk_linear(x, weight, bias):
     op = _gemm_op(s) if bias is None else _gemm_bias_op(s, m, n)
     key = (_bucket(m), n, k, bias is not None)
     if key not in DECISIONS:
-        _decide(key, lambda: _measure(op, a, weight, bias))
+        _decision(key, lambda: _measure(op, a, weight, bias))
         if os.environ.get("HK_SGLD_LOG", "0") not in _OFF:
             print(f"[hk] sglang-diffusion linear {m}x{n}x{k}{' +bias' if bias is not None else ''}: "
                   f"{DECISIONS[key][1]}", flush=True)
@@ -183,7 +183,8 @@ def _hk_linear(x, weight, bias):
 
 
 #: (M bucket, N, K, bias?) -> (take hk's GEMM?, why), decided the first time a shape is seen and
-#: pinned in DECISIONS_FILE, so every later process -- and every TP rank -- takes the same kernel.
+#: pinned in DECISIONS_FILE, so every later process takes the same kernel. With more than one rank
+#: nothing is timed: pinned decisions only (_pinned_only).
 DECISIONS = {}
 
 
@@ -201,18 +202,99 @@ def decisions_file():
     return cache_dir() / f"sgld_linear_{current_arch()}_{dev}.json"
 
 
+def world_size() -> int:
+    """The engine's ranks: torch.distributed's world when a process group is up (SGLang-Diffusion's
+    sequence / tensor parallel workers), else WORLD_SIZE, else 1."""
+    try:
+        import torch.distributed as dist  # noqa: PLC0415
+
+        if dist.is_available() and dist.is_initialized():
+            return dist.get_world_size()
+    except Exception:  # noqa: BLE001 -- no torch.distributed: one process
+        pass
+    try:
+        return max(1, int(os.environ.get("WORLD_SIZE", "1")))
+    except ValueError:
+        return 1
+
+
+#: Under more than one rank, the pinned table as this process read it, once: (table, digest).
+_PINNED = []
+
+
+def _pinned_only(key):
+    """DECISIONS[key] when the engine runs more than one rank: the pinned decision, else the engine's
+    GEMM -- never timed. Timing at a shape's first call ran on the forward's own stream under a file
+    lock every rank shares: a rank holding the lock waited on an in-flight collective the other ranks,
+    blocked on that lock, never reached (a 4-GPU SP Qwen-Image deadlock, NCCL's watchdog after 600 s).
+    And a timed near-tie can pick differently per rank. So with ranks every decision comes from the
+    pinned file, read once without a lock (it is replaced atomically), and so is the same on every
+    rank that reads the same file; the first one logs the table's digest, which must match across
+    the ranks' lines. Shapes pinned by a one-process run on the same GPU model (decisions_file())
+    are taken; the rest stay on the engine."""
+    import hashlib  # noqa: PLC0415
+    import json  # noqa: PLC0415
+
+    if not _PINNED:
+        path = decisions_file()
+        try:
+            raw = path.read_bytes() if path.exists() else b"{}"
+            table = json.loads(raw)
+        except (OSError, ValueError):
+            raw, table = b"{}", {}
+        _PINNED.append((table, hashlib.sha256(raw).hexdigest()[:12]))
+        print(f"[hk] sglang-diffusion linear: {world_size()} ranks: pinned decisions only, no timing "
+              f"(table {_PINNED[0][1]}, {len(table)} shape(s) in {path}); unpinned shapes keep the "
+              f"engine's GEMM (pid {os.getpid()})", flush=True)
+    table, digest = _PINNED[0]
+    skey = ",".join(str(int(v)) for v in key)
+    if skey in table:
+        take, why = table[skey]
+        DECISIONS[key] = (bool(take), f"{why} (pinned, table {digest})")
+    else:
+        DECISIONS[key] = (False, f"engine (unpinned; {world_size()} ranks decide nothing at run time)")
+    return DECISIONS[key]
+
+
+def _decision(key, measure):
+    """DECISIONS[key] for a shape seen for the first time: timed and pinned by one process
+    (_decide), pinned-only with more than one rank (_pinned_only)."""
+    return _pinned_only(key) if world_size() > 1 else _decide(key, measure)
+
+
+#: How long a process waits for another's lock on the decisions file before it raises (seconds).
+LOCK_TIMEOUT_S = 300.0
+
+
+def _lock(f, path):
+    """flock(LOCK_EX) on `f`, raising -- naming the file -- rather than waiting forever."""
+    import fcntl  # noqa: PLC0415
+
+    limit = float(os.environ.get("HK_SGLD_LOCK_S", LOCK_TIMEOUT_S))
+    t0 = time.monotonic()
+    while True:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            if time.monotonic() - t0 > limit:
+                raise RuntimeError(
+                    f"hk sgld_linear: {path}.lock held by another process for over {limit:.0f} s; "
+                    f"not waiting further (HK_SGLD_LOCK_S). HK_SGLD_LINEAR=0 runs without the route.")
+            time.sleep(0.05)
+
+
 def _decide(key, measure):
     """DECISIONS[key]: the pinned decision if this GPU has one, else measure() -- under a file lock,
-    so processes starting together (TP ranks) do not each time a near-tie and pick differently --
-    and pin it. A timed decision can flip between processes at a near-tie shape; a pinned one cannot,
-    so the same seed gives the same image in every process."""
-    import fcntl  # noqa: PLC0415
+    so processes starting together do not each time a near-tie and pick differently -- and pin it.
+    A timed decision can flip between processes at a near-tie shape; a pinned one cannot, so the same
+    seed gives the same image in every process. One process only: with ranks see _pinned_only."""
     import json  # noqa: PLC0415
 
     path = decisions_file()
     skey = ",".join(str(int(v)) for v in key)
     with open(f"{path}.lock", "a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        _lock(lock, path)
         try:
             table = json.loads(path.read_text()) if path.exists() else {}
         except ValueError:                       # a torn file: decide again
