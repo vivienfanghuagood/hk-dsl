@@ -154,6 +154,14 @@ Check that `pip show hk-dsl` works with the Python that runs vLLM, and that
 `no route on`, `--status` says why: usually a GPU hk has no routes for, or an
 `HK_*` variable left set.
 
+**hk installed in its own directory** (`pip install --target DIR hk-dsl`, put on `PYTHONPATH`, to keep it out of
+an image's environment). Two things matter:
+- **Add DIR to `PYTHONPATH`; don't replace it:** `export PYTHONPATH=DIR${PYTHONPATH:+:$PYTHONPATH}`. Some vLLM
+  images set `PYTHONPATH` themselves (for ROCm's SMI library). Without their entry, vLLM stops with `Failed to
+  infer device type`.
+- **Keep `hk_dsl-*.dist-info` in DIR.** vLLM finds the plugin through that entry point, in the API server and
+  in every tensor-parallel worker. Copying only `DIR/hk` leaves the workers without hk.
+
 **`[hk] WARNING: vllm: route ... OFF -- engine contract FAILED`.** Your vLLM
 changed a function that route replaces, so hk leaves that route off and keeps
 the others. vLLM still runs correctly. The versions hk was tested with are in
