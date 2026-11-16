@@ -6,6 +6,8 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+- docs/vllm.md, troubleshooting: hk installed with `pip install --target` goes on `PYTHONPATH` by appending (some
+  vLLM images set their own) and needs its `hk_dsl-*.dist-info` for vLLM's workers to load the plugin.
 - vLLM, `vllm_gptq`: the two-copy path is removed -- the `hk_vllm::gptq_w4a16` op, `gptq_w4a16()` and the
   `repack_gptq` copy kept beside vLLM's tensors, unreachable on gfx1100 since 0.9.23. An RDNA3W4A16LinearKernel
   layer on an arch other than gfx1100 now keeps vLLM's path (counted in `vllm_gptq.REFUSED`) instead of a
