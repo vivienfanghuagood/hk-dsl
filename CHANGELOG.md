@@ -4,24 +4,26 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
-## Unreleased
+## 0.9.24
 
-- SGLang-Diffusion, `sgld_linear`: with more than one rank (sequence or tensor parallel) a GEMM shape is no
-  longer timed at its first call. A rank timed it under a file lock all ranks share, on a stream waiting for a
-  collective the other ranks -- blocked on that lock -- never reached: a 4-GPU SP Qwen-Image 2.1 server hung at
-  warmup until NCCL's watchdog (600 s). Ranks now take the pinned decision or the engine's GEMM, identical on
-  every rank, and log the decisions table's digest; one process still times and pins. A wait for the lock is
-  bounded (`HK_SGLD_LOCK_S`) and raises. Regression test with 2 and 4 real ranks.
+hk-dsl 0.9.24: a patch release. SGLang-Diffusion's `sgld_linear` no longer deadlocks a server with more than
+one rank, plus cleanups, test fixes and docs. No change to the dialect (`hk-dialect-8`).
 
-- docs/vllm.md, troubleshooting: hk installed with `pip install --target` goes on `PYTHONPATH` by appending (some
-  vLLM images set their own) and needs its `hk_dsl-*.dist-info` for vLLM's workers to load the plugin.
-- vLLM, `vllm_gptq`: the two-copy path is removed -- the `hk_vllm::gptq_w4a16` op, `gptq_w4a16()` and the
-  `repack_gptq` copy kept beside vLLM's tensors, unreachable on gfx1100 since 0.9.23. An RDNA3W4A16LinearKernel
-  layer on an arch other than gfx1100 now keeps vLLM's path (counted in `vllm_gptq.REFUSED`) instead of a
-  second copy. `vllm_quark`'s helpers (`plan_call`, `_vllm_gptq`, `MIN_M`) stay.
-- README: the Quick start is install, run, and the `[hk] vLLM routes on:` line that shows hk is on; SGLang,
-  Radeon Cloud and the switches moved to a Details section. The demo GIF is back, re-recorded on the 35B
-  scorecard scenario with CUDA graphs on both sides (`tools/hk-bench/serving/readme_demo/record_serve.py`).
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels below are the same files.
+
+    pip install hk_dsl-0.9.24-cp312-cp312-manylinux_2_35_x86_64.whl
+
+### Changes
+
+- SGLang-Diffusion, `sgld_linear`: with more than one rank, no GEMM timing at the first call; this fixes a 4-GPU
+  sequence-parallel Qwen-Image 2.1 server that hung at warmup. The lock wait is bounded (`HK_SGLD_LOCK_S`) (#408).
+- vLLM, `vllm_gptq`: the unreachable two-copy path is removed (#404).
+- Tests: the gfx950 `test_fenced` flakes; attention tolerance at 2 bf16 ulps, and the quant test names the side that moved (#405).
+- README: a three-line Quick start, and the demo GIF re-recorded on the 35B scorecard scenario with CUDA graphs on both sides (#406).
+- docs/vllm.md: a `pip install --target` install appends to `PYTHONPATH` and keeps its dist-info (#407).
+- Scorecard: two scenarios against best stock vLLM, measured with `vllm bench serve`, with repro commands (#396).
 
 ## 0.9.23
 
