@@ -681,6 +681,7 @@ not restate it:
 | `HK_SGLD_PATCHEMBED` | `switches.py` | Qwen3-VL's vision patch embedding as one F.linear (opt-in for now) |
 | `HK_SGLD_LOG` | `sglang_diffusion.py` | `1`: print each linear shape's measured decision as it is made (default off) |
 | `HK_SGLD_REPORT_S` | `sglang_diffusion.py` | seconds between the route's `[hk]` counter lines (default 60) |
+| `HK_SGLD_LOCK_S` | `sglang_diffusion.py` | seconds one process waits for another's lock on the linear decisions file before it raises (default 300; one process only -- with more than one rank nothing is timed or locked) |
 | `HK_SDPA_K3` | `ops/sdpa.py` | `hk.ops.sdpa`'s non-causal head_dim-128 calls on `attn_k3` (a route) |
 | `HK_SPLITS` | `ops/paged.py` | the decode backend's KV split: `auto` (default), `off`/`0`/`1`, or a count |
 | `HK_TRITON_DECODE_ALSO` | `vllm_backend.py` | decode batch sizes past `TRITON_DECODE_MAX` that run Triton's kernel on hk's cache, as ranges: `17-24,49-56` (default none) |
