@@ -481,11 +481,16 @@ def _kernels(head_dim: int, causal: bool, scale: Optional[float], n: int):
 def _bnhd(t):
     """(B, S, H, D) -> the (B, 1, S, H * D) global the bnhd kernels address: in place when H and
     D are contiguous and the batch is S rows apart (a BSHD tensor, or a slice of a fused QKV
-    one along its heads); otherwise (SBHD, say) a BSHD copy."""
+    one along its heads) or there is one batch (SBHD at B = 1, Megatron's micro-batch of one,
+    whose batch stride is never used); otherwise (SBHD at B > 1, say) a BSHD copy."""
     b, s, h, d = t.shape
-    if not (t.stride(3) == 1 and t.stride(2) == d and t.stride(0) == s * t.stride(1)):
+    if not (t.stride(3) == 1 and t.stride(2) == d and (b == 1 or t.stride(0) == s * t.stride(1))):
         t = t.contiguous()
-    return t.flatten(2).unsqueeze(1)
+    t = t.flatten(2).unsqueeze(1)
+    if b == 1:
+        # the runtime takes a batch stride of depth x rows x row stride; at B = 1 it is unused
+        t = t.as_strided(t.shape, (s * t.stride(2), s * t.stride(2), t.stride(2), 1))
+    return t
 
 
 def _pad(n: int) -> int:
