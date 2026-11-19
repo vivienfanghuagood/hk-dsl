@@ -493,7 +493,7 @@ def _pad(n: int) -> int:
     return -(-n // r) * r
 
 
-def why_unsupported(q, k, v, causal: bool = False) -> str:
+def why_unsupported(q, k, v) -> str:
     """Why `attention` cannot run these operands, or ''."""
     import torch  # noqa: PLC0415
 
@@ -573,10 +573,10 @@ def attention(q, k, v, *, causal: bool = False, scale: Optional[float] = None):
     BSHD, the layout a QKV projection writes: q, k and v may be views of one fused (B, S,
     H + 2 H_kv, D) tensor (read in place); other strides (SBHD) are copied once. Causal is
     top-left with equal lengths. `scale` defaults to head_dim ** -0.5. gfx1201 (RDNA4),
-    head_dim 64 or 128, S >= 256. The forward keeps a base-2 log-sum-exp a row (fp32), the
+    head_dim 64 or 128, S >= 192. The forward keeps a base-2 log-sum-exp a row (fp32), the
     backward runs a Delta kernel and the dQ, dK and dV kernels; dK and dV of a shared KV head are
     summed over its query heads inside the kernels."""
-    why = why_unsupported(q, k, v, causal)
+    why = why_unsupported(q, k, v)
     if why:
         raise ValueError(f"hk.ops.attn_bwd.attention: {why}")
     return _function().apply(q, k, v, causal, scale)

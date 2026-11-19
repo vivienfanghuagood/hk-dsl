@@ -72,6 +72,11 @@ FAMILIES = [
     dict(name="attention", what="flash attention, forward; its gfx950 kernel is `attn_cdna`",
          entries=["hk.ops.attention"],
          arches=RDNA_AND_GFX950, dtypes="bf16", routes=[], tests=["test_attn.py"]),
+    dict(name="attn_bwd", what="flash attention for training: the forward with its log-sum-exp "
+                               "and the dQ, dK, dV backward, as one autograd function; BSHD, "
+                               "MHA or GQA, causal or not, head_dim 64 or 128",
+         entries=["hk.ops.attn_bwd.attention"],
+         arches=("gfx1201",), dtypes="bf16", routes=[], tests=["test_attn_bwd.py"]),
     dict(name="sdpa", what="`F.scaled_dot_product_attention`, on hk's attention where it fits "
                            "and torch's elsewhere",
          entries=["hk.ops.sdpa.scaled_dot_product_attention"],

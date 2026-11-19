@@ -20,7 +20,7 @@ SHAPES = [  # name, B, S, H, H_kv, D, causal
     ("P1", 2, 2048, 16, 16, 128, True),     # a 1.28B trainer: hidden 2048, 16 heads, mbs 2
     ("P2", 1, 2048, 16, 16, 128, True),
     ("NC", 2, 2048, 16, 16, 128, False),
-    ("Q05", 2, 2048, 16, 4, 128, True),     # GQA 4
+    ("G4", 2, 2048, 16, 4, 128, True),      # GQA 4
     ("L1B", 1, 4096, 32, 8, 64, True),      # head_dim 64, GQA 4
     ("L8B", 1, 4096, 32, 8, 128, True),
 ]
