@@ -108,6 +108,16 @@ def test_sbhd():
     _check(q, k, v, True)
 
 
+def test_sbhd_one_batch_in_place():
+    """Megatron's micro-batch of one: SBHD q, k, v (and o's gradient) are read where they are."""
+    s, h, d = 384, 4, 128
+    qkv = _bshd(s, 1, 3 * h, d, 12)                    # (S, B=1, 3H, D), one projection output
+    q, k, v = (qkv[:, :, i * h:(i + 1) * h].permute(1, 0, 2, 3) for i in range(3))
+    for t in (q, k, v):
+        assert attn_bwd._bnhd(t).data_ptr() == t.data_ptr()
+    _check(q, k, v, True)
+
+
 def test_rejects():
     q = _bshd(1, 256, 4, 128, 0)
     assert "head_dim" in attn_bwd.why_unsupported(q[..., :96], q[..., :96], q[..., :96])
