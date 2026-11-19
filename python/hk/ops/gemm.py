@@ -83,7 +83,7 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
                 write_pos: int = 2, lds_buffers: int = 1, stagger: int = 0,
                 stream_a: bool = False, setprio: bool = False, sched: int = 0,
                 max_vgprs: int = 256, min_occupancy: int = 1, epilogue=None,
-                op_dtype=bf16):
+                op_dtype=bf16, b_dtype=None):
     """The default tiling is `big_config` from the C++: 128x128x64, 8 warps.
 
     `op_dtype=hk.i8`: A and B are int8 and the WMMA is v_wmma_i32_16x16x16_iu8
@@ -95,7 +95,9 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
     `op_dtype=hk.fp8e4m3` or `hk.fp8e5m2` (gfx1201): A and B are OCP fp8 and
     the WMMA is v_wmma_f32_16x16x16_fp8_fp8 (bf8_bf8 for e5m2), twice the bf16
     rate; the accumulators are fp32, stored to a bf16 C or through an epilogue
-    (`scaled_mm`'s: acc * scale_a * scale_b).
+    (`scaled_mm`'s: acc * scale_a * scale_b). `b_dtype` (default `op_dtype`)
+    makes B the other fp8 format: e5m2 x e4m3 is a training backward's
+    product (a gradient against a weight), v_wmma_f32_16x16x16_bf8_fp8.
 
     The default LDS is one buffer, not the C++'s two. Two let the next
     K-tile be written while this one is read, one barrier a tile; but a
@@ -155,9 +157,13 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
                             or get_target(current_arch()).wave != 32):
         raise ValueError(f"op_dtype={op_dtype}: {current_arch()} has no fp8 WMMA "
                          f"(gfx1201 does)")
+    b_dtype = op_dtype if b_dtype is None else b_dtype
+    if b_dtype is not op_dtype and not (op_dtype in FP8 and b_dtype in FP8):
+        raise ValueError(f"b_dtype={b_dtype}: only fp8 mixes (e4m3 with e5m2), and A is "
+                         f"{op_dtype}")
     acc_t = i32 if op_dtype is i8 else fp32
     st_a = hk.ST(op_dtype, block_m, k_step)
-    st_b = hk.ST(op_dtype, block_n, k_step)
+    st_b = hk.ST(b_dtype, block_n, k_step)
     inited = epilogue is not None and getattr(epilogue, "init", None) is not None
     if inited and op_dtype is i8:
         raise ValueError("an i8 GEMM's accumulators are i32: no init_from epilogue")
@@ -178,7 +184,7 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
         buf_a = g.stage_buffer(As, name="buf_a")
         buf_b = g.stage_buffer(Bs, name="buf_b")
 
-        B_tile = [hk.zeros(hk.RT(op_dtype, split_n, dot_slice, "row"))
+        B_tile = [hk.zeros(hk.RT(b_dtype, split_n, dot_slice, "row"))
                   for _ in range(n_split)]
         if stream_a:
             A_frag = [hk.zeros(hk.RT(op_dtype, 16, dot_slice, "row")) for _ in range(2)]
@@ -456,7 +462,7 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
     if op_dtype is i8 or op_dtype in FP8:
         # i8 operands: C i32 (raw accumulators) unless an epilogue retypes it;
         # fp8 operands: C bf16, from fp32 accumulators
-        body.__annotations__.update(a=hk.Tensor[op_dtype], b=hk.Tensor[op_dtype],
+        body.__annotations__.update(a=hk.Tensor[op_dtype], b=hk.Tensor[b_dtype],
                                     c=hk.Tensor[i32 if op_dtype is i8 else bf16])
         body.__signature__ = inspect.signature(body).replace(parameters=[
             p.replace(annotation=body.__annotations__[p.name]) if p.name in ("a", "b", "c") else p
@@ -752,6 +758,25 @@ FP8_DEFAULT = dict(DEFAULT, block_m=256)
 #:     1024x14336x4096     525.8      617.5        729.8
 FP8_SMALL_M = 128
 
+#: The fp8 schedule when A's rows are a power of two >= FP8_POW2_STRIDE bytes
+#: apart. Such rows share a memory channel on gfx1201, and FP8_DEFAULT's tile,
+#: which reads 64 B from each of 256 rows at one K offset, camps on that channel.
+#: The same kernel at M4096 N2048 runs 247 TF at K 6144 but 129 TF when A's
+#: rows are 16 KB apart, and 232 TF at K 16384 with the stride padded by
+#: 256 B. A 128-row, 128-deep tile with two LDS buffers, with each workgroup
+#: starting 4 K-tiles further on (stagger), gets most of it back without
+#: padding. e5m2 x e4m3, TF:
+#:
+#:                      FP8_DEFAULT   this   FP8_DEFAULT + stagger 8   TunableOp hipBLASLt
+#:     4096x2048x16384      122        205            155                    182
+#:     8192x2048x16384      135        194            154                    185
+#:     4096x2048x6144       236        197            222                    216
+#:
+#: It loses at short power-of-two strides (8192: 193 vs 192-221), so it is taken
+#: from 16 KB up (tools/rdna4-probes/fp8_dgrad.py).
+FP8_POW2 = dict(DEFAULT, k_step=128, lds_buffers=2, wgm=4, stagger=4)
+FP8_POW2_STRIDE = 16384
+
 
 def _scale_ab(acc, ctx):
     return acc * ctx.scale_a * ctx.scale_b
@@ -806,10 +831,23 @@ def _scale_epilogue(with_bias: bool):
 
 
 @functools.lru_cache(maxsize=None)
-def _scaled_kernel(op: str, with_bias: bool, block_m: int):
+def _scaled_kernel(op: str, with_bias: bool, block_m: int, op_b: Optional[str] = None,
+                   pow2: bool = False):
     ep = _scale_epilogue(with_bias)
-    return gemm_kernel(f"scaled_mm_{op}_{'bias' if with_bias else 'nobias'}_m{block_m}",
-                       op_dtype=DTYPES[op], epilogue=ep, **dict(FP8_DEFAULT, block_m=block_m)), ep
+    pair = op if op_b in (None, op) else f"{op}_{op_b}"
+    sched = FP8_POW2 if pow2 else dict(FP8_DEFAULT, block_m=block_m)
+    return gemm_kernel(f"scaled_mm_{pair}_{'bias' if with_bias else 'nobias'}_"
+                       + ("pow2" if pow2 else f"m{block_m}"),
+                       op_dtype=DTYPES[op], b_dtype=DTYPES[op_b or op], epilogue=ep,
+                       **sched), ep
+
+
+def _pow2_rows(a, m: int, k: int) -> bool:
+    """A's rows a power of two >= FP8_POW2_STRIDE bytes apart, with enough rows and K
+    for FP8_POW2's tile (fp8: one byte an element)."""
+    s = a.stride(0)
+    return (s >= FP8_POW2_STRIDE and not s & (s - 1) and m > FP8_SMALL_M
+            and not k % FP8_POW2["k_step"])
 
 
 @functools.lru_cache(maxsize=None)
@@ -835,13 +873,19 @@ def scaled_mm(a, b, scale_a, scale_b, *, bias=None, out=None):
     """bf16 (A @ B.T) * scale_a * scale_b (+ bias), fp8 operands, fp32
     accumulate: torch._scaled_mm's product with hk.ops.matmul's layout.
 
-    `a` is (M, K) and `b` (N, K), both float8_e4m3fn or both float8_e5m2 (OCP;
-    the WMMA is v_wmma_f32_16x16x16_fp8_fp8 or bf8_bf8, twice the bf16 rate).
+    `a` is (M, K) and `b` (N, K), float8_e4m3fn or float8_e5m2 (OCP; the WMMA
+    is v_wmma_f32_16x16x16_fp8_fp8, bf8_bf8, or for a mixed pair -- a
+    training backward's gradient against a weight -- bf8_fp8 / fp8_bf8, all
+    twice the bf16 rate).
     `scale_a` is one value or one a row of A ((M,) or (M, 1)); `scale_b` one
     value or one a row of B ((N,) or (1, N)) -- per-tensor or per-token x
     per-channel, the two forms vLLM's fp8 linear layers use. `bias` is (N,).
     Up to FP8_DECODE_M rows, with K a multiple of 1024, it runs
-    hk.ops.decode_gemm's kernel instead of the tiled one.
+    hk.ops.decode_gemm's kernel instead of the tiled one (one fp8 format
+    only). A with a row stride (rows FP8_POW2_STRIDE bytes or more apart, a
+    power of two) runs FP8_POW2's schedule; a caller that can pad such rows by
+    64 bytes gets the faster default one (a dense K-16384 operand: 1.47 vs
+    1.27 ms at M4096 N2048).
     gfx1201 only: gfx1100 has no fp8 WMMA, and gfx950's fp8 GEMMs are
     hk.ops.gemm_cdna's.
     """
@@ -850,10 +894,10 @@ def scaled_mm(a, b, scale_a, scale_b, *, bias=None, out=None):
     from ..templates.gemm import _preparer  # noqa: PLC0415
 
     fp8 = {torch.float8_e4m3fn: "fp8e4m3", torch.float8_e5m2: "fp8e5m2"}
-    if a.dtype != b.dtype or a.dtype not in fp8:
-        raise TypeError(f"scaled_mm: A and B both float8_e4m3fn or both float8_e5m2, "
+    if a.dtype not in fp8 or b.dtype not in fp8:
+        raise TypeError(f"scaled_mm: A and B float8_e4m3fn or float8_e5m2, "
                         f"got {a.dtype} and {b.dtype}")
-    op = fp8[a.dtype]
+    op, op_b = fp8[a.dtype], fp8[b.dtype]
     tgt = get_target(current_arch())
     if op not in tgt.mma or tgt.wave != 32:
         raise ValueError(f"scaled_mm: {current_arch()} has no fp8 WMMA (gfx1201 does)")
@@ -878,7 +922,11 @@ def scaled_mm(a, b, scale_a, scale_b, *, bias=None, out=None):
                              f"{length}")
         return t.reshape(length)
 
-    if _fp8_decodes(m, n, k):
+    if _pow2_rows(a, m, k):
+        kern, ep = _scaled_kernel(op, bias is not None, 0, op_b, pow2=True)
+    elif op_b != op:
+        kern, ep = _scaled_kernel(op, bias is not None, _fp8_block_m(m), op_b)
+    elif _fp8_decodes(m, n, k):
         from .decode_gemm import tokens_for  # noqa: PLC0415
 
         kern, ep = _scaled_decode_kernel(op, bias is not None, tokens_for(m))

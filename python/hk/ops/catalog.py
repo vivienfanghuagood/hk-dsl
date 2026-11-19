@@ -48,7 +48,7 @@ FAMILIES = [
          tests=["test_gemm_shipped.py", "test_gemm_cdna.py", "test_vllm_gemm.py"]),
     dict(name="scaled_mm", what="an fp8 GEMM with per-tensor or per-token x per-channel scales (torch._scaled_mm's product)",
          entries=["hk.ops.scaled_mm"],
-         arches=("gfx1201",), dtypes="fp8 (e4m3, e5m2) in, bf16 out", routes=[],
+         arches=("gfx1201",), dtypes="fp8 (e4m3, e5m2, or a mixed pair) in, bf16 out", routes=[],
          tests=["test_scaled_mm.py"],
          note="gfx1100 has no fp8 WMMA; gfx950's fp8 GEMMs are the MXFP8 family"),
     dict(name="decode_gemm", what="the decode GEMV / skinny GEMM, M <= 64",
