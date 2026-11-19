@@ -266,8 +266,10 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
     _R("megatron_fc1_bwd", "megatron", "HK_MEGATRON_FC1_BWD", False, (),
        "the MLP's fc1 backward under FP8 delayed scaling: SwiGLU backward + fp8 cast as one kernel "
        "(hk.ops.fp8_cast), padded e5m2 gradient, fc1's dgrad and wgrad on hk.ops.gemm.scaled_mm",
-       "opt-in: a 3-seed loss check on real text is open (the hook's loss runs lower than "
-       "baseline's); docs/megatron.md"),
+       "opt-in (a new integration). 1.28B FP8 on one R9700, mbs 2: 1294.7 -> 1261.9 ms an iteration "
+       "(60 iterations, ABBA); loss on real text, 6 seeds, steps 151-200: hook - base -0.006 +- 0.015 "
+       "a seed, inside a placebo arm's -0.014; per call in the step, the fp8 codes match Megatron + "
+       "TE's cast but for 1e-5 of them (one code), dgrad 4e-5 from TE's GEMM (docs/megatron.md)"),
 )}
 
 
