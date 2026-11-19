@@ -204,7 +204,7 @@ def dq_kernel(name: str, *, head_dim: int = 128, q_block: int = 16, kv_block: in
 
 
 
-def dkdv_kernel(name: str, *, head_dim: int = 128, q_step: int = 32, warps: int = 4,
+def dkdv_kernel(name: str, *, head_dim: int = 128, q_step: int = 16, warps: int = 4,
                 causal: bool = False, scale: Optional[float] = None, bnhd: bool = False,
                 setprio: bool = True, max_vgprs: int = 256, min_occupancy: int = 1):
     """dK and dV for one (head_dim, causal, scale). Arguments: q, k, v, do (bf16), lse and delta
@@ -218,10 +218,6 @@ def dkdv_kernel(name: str, *, head_dim: int = 128, q_step: int = 32, warps: int 
     kv_tile = 16 * warps
     sc = scale if scale is not None else head_dim ** -0.5
     scale_l2e = sc * LOG2E
-    # Q^T and dO^T are staged by the warps from 16x16 slabs: for each Q fragment f (static -- it
-    # is the LDS column store_frag needs as an immediate), warp w transposes d fragments w,
-    # w + warps, ...
-    d_per_warp = -(-d_frags // warps)
 
     # Each pair that is read the same way shares one tile, side by side, and so one granule set:
     # Q | dO, Q^T | dO^T, and a warp's K | V. Six sets of address registers cost the 18 VGPRs
@@ -229,7 +225,7 @@ def dkdv_kernel(name: str, *, head_dim: int = 128, q_step: int = 32, warps: int 
     st_qo = hk.ST(bf16, q_step, 2 * head_dim)
     st_kv = hk.ST(bf16, 16, 2 * head_dim)     # one warp's K | V rows: in LDS, not registers
     ty_w = hk.RT(bf16, 16, head_dim, "row")
-    st_qot = hk.ST(bf16, head_dim, 2 * q_step)
+
 
     ty_op = hk.RT(bf16, 16, 16, "row")         # a 16x16 operand fragment
     ty_s = hk.RT(fp32, 16, 16, "col")          # one [q, kv] fragment of S / P / dP / dS
@@ -241,9 +237,8 @@ def dkdv_kernel(name: str, *, head_dim: int = 128, q_step: int = 32, warps: int 
              dk: hk.Tensor[bf16], dv: hk.Tensor[bf16]):
         g = hk.group(warps)
         qo_s = hk.lds.alloc(st_qo, name="qo_s")
-        qot_s = hk.lds.alloc(st_qot, name="qot_s")
         gr_qo = qo_s.granules(name="gr_qo")
-        gr_qot = qot_s.granules(name="gr_qot")
+
         # One 16-row slab a warp, stacked: a warp's own slab picked by its id has a granule set,
         # where a runtime-indexed subtile of one big tile does not (its reads would each hold an
         # address register, and at head_dim 128 those spill).
@@ -285,19 +280,6 @@ def dkdv_kernel(name: str, *, head_dim: int = 128, q_step: int = 32, warps: int 
             qi = hk.min(qi, q_blocks - 1)
             return hk.min(qi * q_step, n_q - q_step)
 
-        def transpose_q(h, q_start):
-            # One slab at a time, load -> transpose -> LDS: slabs held in flight together sit on
-            # top of the accumulators, and at head_dim 128 that is what spilled.
-            for f in range(q_frags):
-                for j in range(d_per_warp):
-                    kk = wid + j * warps
-                    if kk < d_frags:
-                        # slab (q frag f, d frag kk) of Q is fragment (kk, f) of Q^T
-                        gr_qot.store_frag(hk.transpose_sep(
-                            at(q, h, q_start + 16 * f, 16 * kk).load(ty_op)), kk, f)
-                        gr_qot.store_frag(hk.transpose_sep(
-                            at(dout, h, q_start + 16 * f, 16 * kk).load(ty_op)), kk, q_frags + f)
-
         def block_math(h, q_start, skip):
             for f in range(q_frags):
                 with hk.scope():
@@ -317,24 +299,24 @@ def dkdv_kernel(name: str, *, head_dim: int = 128, q_step: int = 32, warps: int 
                         s.upper_fill_(skip - 16 * f, NEG_INF)
                     s -= lse[hk.elem_coord(b, h, 0, qr0)].load(ty_cv)
                     s.exp2_()                                    # P
+                    # One read of each dO fragment feeds both dP = dO V^T and, transposed in
+                    # registers (transpose_sep), dV^T += dO^T P: no second, transposed copy in
+                    # LDS, whose 16 KB kept the workgroups a WGP holds at two.
+                    p16 = s.to(bf16)
                     dp = hk.zeros(ty_s)
                     for kk in range(d_frags):
                         oa = gr_qo.load_frag(f, d_frags + kk, ty_op)
                         va = gr_kv.load_frag(0, d_frags + kk, ty_op)
                         hk.lds.wait_for(oa, va)
                         dp += oa @ va.T
-                    p16 = s.to(bf16)
-                    for kk in range(d_frags):
-                        ota = gr_qot.load_frag(kk, q_frags + f, ty_op)
-                        hk.lds.wait_for(ota)
-                        dv_c[kk] += ota @ p16
+                        dv_c[kk] += hk.transpose_sep(oa) @ p16
                     dp -= delta[hk.elem_coord(b, h, 0, qr0)].load(ty_cv)
                     dp *= s                                      # dS
                     ds16 = dp.to(bf16)
                     for kk in range(d_frags):
-                        qta = gr_qot.load_frag(kk, f, ty_op)
-                        hk.lds.wait_for(qta)
-                        dk_c[kk] += qta @ ds16
+                        qa = gr_qo.load_frag(f, kk, ty_op)
+                        hk.lds.wait_for(qa)
+                        dk_c[kk] += hk.transpose_sep(qa) @ ds16
 
         # Not prefetched: the next block's Q and dO in flight across the math would hold their
         # staging registers (64 a lane at head_dim 128, four warps) next to the two
@@ -349,7 +331,6 @@ def dkdv_kernel(name: str, *, head_dim: int = 128, q_step: int = 32, warps: int 
                 # synchronous workgroup copies: no staging buffer held for the kernel's life
                 g.load(qo_s.subtile(q_step, head_dim, 0, 0), at(q, h, q_start, 0))
                 g.load(qo_s.subtile(q_step, head_dim, 0, 1), at(dout, h, q_start, 0))
-                transpose_q(h, q_start)
                 hk.arch.barrier(drain=True)
                 block_math(h, q_start, skip)
 
@@ -367,4 +348,226 @@ def dkdv_kernel(name: str, *, head_dim: int = 128, q_step: int = 32, warps: int 
                      max_vgprs=max_vgprs, min_occupancy=min_occupancy)
 
 
-__all__ = ["dq_kernel", "dkdv_kernel"]
+
+
+def dkv_kernel(name: str, *, mode: str, head_dim: int = 128, kv_rows: int = 16, q_block: int = 32,
+               warps: int = 12, causal: bool = False, scale: Optional[float] = None,
+               bnhd: bool = False, setprio: bool = True, max_vgprs: int = 256,
+               min_occupancy: int = 1):
+    """dK (mode="dk") or dV (mode="dv"): `dq_kernel` with the roles of Q and KV swapped. A warp
+    owns 16 KV rows -- K (and for dK, V) in registers -- and the workgroup walks the Q blocks,
+    staging Q and dO through LDS, prefetched one block ahead exactly as the forward and dQ stage
+    K and V. Two kernels rather than one fused dK/dV: the fused one holds both accumulators
+    (128 VGPRs at head_dim 128), cannot keep K and V in registers or prefetch, and measured
+    ~29 TF; each of these holds one accumulator and recomputes S (dV: S, dV; dK: S, dP, dK).
+
+    Orientation: S = Q K^T and dP = dO V^T are [q, kv] col tiles (the warp's KV rows on the
+    lane axis), so LSE and Delta are column vectors of them, and P / dS are the B operands of
+    dV^T += dO^T P and dK^T += Q^T dS, with dO^T / Q^T staged transposed in LDS.
+
+    Arguments: q, k, v, do (bf16), lse and delta (fp32 (B, H, 1, N)), out (dk or dv, bf16, k's
+    layout). GQA sums over the query heads of a KV head inside the kernel."""
+    if mode not in ("dk", "dv"):
+        raise ValueError(f"mode is 'dk' or 'dv', not {mode!r}")
+    if kv_rows != 16:
+        raise ValueError("kv_rows: 16 (one fragment a warp)")
+    dk_mode = mode == "dk"
+    d = _derive(head_dim, kv_rows, q_block, warps, 16, 2, 2)
+    kv_tile, d_frags, q_frags = d["q_tile"], d["d_frags"], d["kv_frags"]
+    d_chunks, q_bands, t_frags = d["d_chunks"], d["v_bands"], d["vt_frags"]
+    sc = scale if scale is not None else head_dim ** -0.5
+    scale_l2e = sc * LOG2E
+
+    st_q = hk.ST(bf16, q_block, head_dim)
+    st_qt = hk.ST(bf16, head_dim, q_block)
+
+    ty_op = hk.RT(bf16, 16, 16, "row")
+    ty_s = hk.RT(fp32, 16, 16, "col")          # one [q, kv] fragment of S / P / dP / dS
+    ty_acc = hk.RT(fp32, 16, 16, "col")        # one [d, kv] fragment of dK^T or dV^T
+    ty_cv = hk.col_vec(ty_s)                   # one entry per query: a row of S
+
+    def body(q: hk.Tensor[bf16], k: hk.Tensor[bf16], v: hk.Tensor[bf16],
+             dout: hk.Tensor[bf16], lse: hk.Tensor[fp32], delta: hk.Tensor[fp32],
+             out: hk.Tensor[bf16]):
+        g = hk.group(warps)
+        # Q is S's A operand in both modes; dO is dP's in dK mode; the transposed tile is
+        # Q^T (dK) or dO^T (dV).
+        q_s = hk.lds.alloc(st_q, name="q_s")
+        buf_q = g.stage_buffer(q_s, name="buf_q")
+        gr_q = q_s.granules(name="gr_q")
+        if dk_mode:
+            o_s = hk.lds.alloc(st_q, name="do_s")
+            buf_o = g.stage_buffer(o_s, name="buf_do")
+            gr_o = o_s.granules(name="gr_do")
+        t_s = hk.lds.alloc(st_qt, name="t_s")
+        gr_t = t_s.granules(name="gr_t")
+
+        b = hk.arch.block_idx.z
+        head_kv, kb = hk.arch.block_idx.y, hk.arch.block_idx.x
+        n_q = q.rows
+        n_kv = k.rows
+        if bnhd:
+            group = (q.cols // head_dim) // (k.cols // head_dim)
+        else:
+            group = q.depth // k.depth
+
+        def at(t, h, row, col):
+            if bnhd:
+                return t[hk.elem_coord(b, 0, row, h * head_dim + col)]
+            return t[hk.elem_coord(b, h, row, col)]
+
+        kv_tile_start = hk.max(hk.min(kb * kv_tile, n_kv - kv_tile), 0)
+        wid = hk.arch.warp_id()
+        kv_row = kv_tile_start + wid * 16
+
+        k_r = [at(k, head_kv, kv_row, 16 * kk).load(ty_op) for kk in range(d_frags)]
+        if dk_mode:
+            v_r = [at(v, head_kv, kv_row, 16 * kk).load(ty_op) for kk in range(d_frags)]
+        acc = [hk.zeros(ty_acc) for _ in range(d_frags)]
+        t_rows = [hk.zeros(ty_op) for _ in range(q_bands)]
+        c_chunk = wid
+        stages_t = c_chunk < d_chunks
+        src_t = q if dk_mode else dout        # what is staged transposed
+
+        q_blocks = hk.cdiv(n_q, q_block)
+        qb0 = 0
+        if causal:
+            qb0 = kv_tile_start // q_block    # earlier Q blocks see none of these KV rows
+
+        def block_start(h, qi):
+            qi = hk.min(qi, q_blocks - 1)
+            return hk.min(qi * q_block, n_q - q_block)
+
+        def load_q(h, q_start):
+            g.stage(buf_q, at(q, h, q_start, 0))
+            if dk_mode:
+                g.stage(buf_o, at(dout, h, q_start, 0))
+            if stages_t:
+                for w in range(q_bands):
+                    at(src_t, h, q_start + 16 * w, c_chunk * 16).load(ty_op, into=t_rows[w])
+
+        def commit_q():
+            hk.arch.vm_wait(0)
+            g.commit(q_s, buf_q)
+            if dk_mode:
+                g.commit(o_s, buf_o)
+            if stages_t:
+                for w in range(q_bands):
+                    tt = hk.transpose_sep(t_rows[w])
+                    for t in range(t_frags):
+                        gr_t.store_frag(tt, c_chunk * t_frags + t, w)
+
+        def block_math(h, q_start, skip):
+            with hk.scope():
+                # ---- S = Q . K^T, P = exp2(S - LSE) ------------------------------------
+                s_f = [hk.zeros(ty_s) for _ in range(q_frags)]
+                for kk in range(d_frags):
+                    for n0 in range(0, q_frags, 2):
+                        q_win = [gr_q.load_frag(n0 + i, kk, ty_op) for i in range(2)]
+                        hk.lds.wait_for(*q_win)
+                        if setprio:
+                            hk.arch.setprio(1)
+                        for i in range(2):
+                            s_f[n0 + i] += q_win[i] @ k_r[kk].T
+                        if setprio:
+                            hk.arch.setprio(0)
+                for n in range(q_frags):
+                    s_f[n] *= scale_l2e
+                    if causal:
+                        # rows q = q_start + 16n + r, columns kv = kv_row + c: fill kv > q
+                        s_f[n].tril_(kv_row - q_start - 16 * n, NEG_INF)
+                if skip > 0:
+                    for n in range(q_frags):
+                        s_f[n].upper_fill_(skip - 16 * n, NEG_INF)
+                for n in range(q_frags):
+                    s_f[n] -= lse[hk.elem_coord(b, h, 0, q_start + 16 * n)].load(ty_cv)
+                    s_f[n].exp2_()
+                if dk_mode:
+                    # ---- dP = dO . V^T; dS = P . (dP - Delta) ----------------------------
+                    dp_f = [hk.zeros(ty_s) for _ in range(q_frags)]
+                    for kk in range(d_frags):
+                        for n0 in range(0, q_frags, 2):
+                            o_win = [gr_o.load_frag(n0 + i, kk, ty_op) for i in range(2)]
+                            hk.lds.wait_for(*o_win)
+                            if setprio:
+                                hk.arch.setprio(1)
+                            for i in range(2):
+                                dp_f[n0 + i] += o_win[i] @ v_r[kk].T
+                            if setprio:
+                                hk.arch.setprio(0)
+                    for n in range(q_frags):
+                        dp_f[n] -= delta[hk.elem_coord(b, h, 0, q_start + 16 * n)].load(ty_cv)
+                        dp_f[n] *= s_f[n]
+                    b_f = dp_f
+                else:
+                    b_f = s_f
+                # ---- dK^T += Q^T . dS  |  dV^T += dO^T . P ----------------------------------
+                for n in range(q_frags):
+                    b16 = b_f[n].to(bf16)
+                    for g0 in range(0, d_frags, 2):
+                        t_win = [gr_t.load_frag(g0 + i, n, ty_op) for i in range(2)]
+                        hk.lds.wait_for(*t_win)
+                        if setprio:
+                            hk.arch.setprio(1)
+                        for i in range(2):
+                            acc[g0 + i] += t_win[i] @ b16
+                        if setprio:
+                            hk.arch.setprio(0)
+
+        for hh in range(group):
+            h = head_kv * group + hh
+            load_q(h, block_start(h, qb0))
+            for qi in range(qb0, q_blocks):
+                q_lo = qi * q_block
+                q_start = hk.min(q_lo, n_q - q_block)
+                skip = q_lo - q_start
+                hk.arch.barrier()
+                commit_q()
+                hk.arch.barrier(drain=True)
+                load_q(h, block_start(h, qi + 1))
+                block_math(h, q_start, skip)
+
+        for i, c in enumerate(acc):
+            if dk_mode:
+                c *= sc
+            at(out, head_kv, kv_row, 16 * i).store(hk.transpose(c))
+
+    def _grid(p):
+        heads = p.k.cols // head_dim if bnhd else p.k.depth
+        return (hk.cdiv(p.k.rows, kv_tile), heads, p.k.batch)
+
+    return hk.kernel(body, warps=warps, grid=_grid, name=name,
+                     max_vgprs=max_vgprs, min_occupancy=min_occupancy)
+
+
+
+
+def delta_kernel(name: str, *, head_dim: int = 128, warps: int = 4, bnhd: bool = False):
+    """Delta = rowsum(dO . O) in fp32, the backward's per-row constant: o and do (bf16, the
+    forward's layout) -> delta, fp32 (B, H, 1, N_pad) with N_pad a multiple of 16 * warps
+    (rows past N read zeros and write zeros there, which nothing reads). 16 rows a warp."""
+    ty = hk.RT(bf16, 16, head_dim, "row")
+    rows = 16 * warps
+
+    def body(o: hk.Tensor[bf16], dout: hk.Tensor[bf16], delta: hk.Tensor[fp32]):
+        b = hk.arch.block_idx.z
+        head, blk = hk.arch.block_idx.y, hk.arch.block_idx.x
+        row = blk * rows + hk.arch.warp_id() * 16
+
+        def at(t):
+            if bnhd:
+                return t[hk.elem_coord(b, 0, row, head * head_dim)]
+            return t[hk.elem_coord(b, head, row, 0)]
+
+        x = at(o).load(ty, bounded=True).to(fp32)
+        x *= at(dout).load(ty, bounded=True).to(fp32)
+        delta[hk.elem_coord(b, head, 0, row)].store(x.sum(axis=1))
+
+    def _grid(p):
+        heads = p.o.cols // head_dim if bnhd else p.o.depth
+        return (hk.cdiv(p.o.rows, rows), heads, p.o.batch)
+
+    return hk.kernel(body, warps=warps, grid=_grid, name=name)
+
+
+__all__ = ["dq_kernel", "dkdv_kernel", "dkv_kernel", "delta_kernel"]
