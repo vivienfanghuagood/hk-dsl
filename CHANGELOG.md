@@ -6,6 +6,14 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+- New `hk.ops.fp8_cast` (gfx1201), fp8 casts for training: `cast_transpose` (bf16 to fp8, rowwise and transposed, with
+  amax, Transformer Engine's delayed-scaling semantics) and `swiglu_bwd_cast_transpose`, Megatron-LM's SwiGLU backward
+  and that cast in one pass. Both write padded row strides for the GEMMs that read them. On an R9700 at 4096 x 8192 the
+  fused SwiGLU backward takes 0.97 ms against 1.49 ms for Megatron's kernel plus TE's quantize
+  (`tools/rdna4-probes/fp8_cast.py`).
+- `hk.ops.scaled_mm(..., accumulate=True)`: out (fp32) += the scaled product, for a weight gradient accumulated into its
+  main_grad.
+
 - New `hk.ops.attn_bwd.attention`: flash attention for training on gfx1201 (RDNA4), an autograd function with the
   dQ, dK and dV backward in the DSL. BSHD bf16 (views of a fused QKV tensor read in place), MHA or GQA, causal or
   not, head_dim 64 or 128. On an R9700, fwd+bwd is 1.75-2.32x torch SDPA (AOTriton) on six training shapes

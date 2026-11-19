@@ -786,6 +786,10 @@ def _scale_ab_bias(acc, ctx):
     return acc * ctx.scale_a * ctx.scale_b + ctx.bias
 
 
+def _scale_ab_acc(acc, ctx):
+    return acc * ctx.scale_a * ctx.scale_b + ctx.c_in
+
+
 #: Up to this many rows, hk.ops.decode_gemm's kernel with fp8 operands: W
 #: streamed straight into registers, no LDS, a 16-row block of W a
 #: workgroup and K split over its warps -- the shape of a decode step, where
@@ -816,7 +820,7 @@ FP8_DECODE_M = 32
 FP8_DECODE = dict(slices=8, warps=8, combine_depth=0, resident=0, splits=1)
 
 
-def _scale_epilogue(with_bias: bool):
+def _scale_epilogue(with_bias: bool, acc=False):
     import torch  # noqa: PLC0415
 
     # The module, not the package's `gemm` (the template object of that name).
@@ -825,6 +829,13 @@ def _scale_epilogue(with_bias: bool):
     # shapes only classify the operands: scale_a one value a row of C, scale_b
     # (and bias) one a column
     ops = {"scale_a": torch.empty(2, 1, device="meta"), "scale_b": torch.empty(3, device="meta")}
+    if acc == "fp32":
+        # C = (A @ B.T) * scales into fp32: a weight gradient's first micro-batch
+        return bind(_scale_ab, ops, 2, 3, fp32)
+    if acc:
+        # C += (A @ B.T) * scales into fp32: a weight gradient accumulated into its main_grad
+        ops["c_in"] = torch.empty(2, 3, dtype=torch.float32, device="meta")
+        return bind(_scale_ab_acc, ops, 2, 3, fp32)
     if with_bias:
         ops["bias"] = torch.empty(3, dtype=torch.bfloat16, device="meta")
     return bind(_scale_ab_bias if with_bias else _scale_ab, ops, 2, 3, bf16)
@@ -832,11 +843,12 @@ def _scale_epilogue(with_bias: bool):
 
 @functools.lru_cache(maxsize=None)
 def _scaled_kernel(op: str, with_bias: bool, block_m: int, op_b: Optional[str] = None,
-                   pow2: bool = False):
-    ep = _scale_epilogue(with_bias)
+                   pow2: bool = False, acc=False):
+    ep = _scale_epilogue(with_bias, acc)
     pair = op if op_b in (None, op) else f"{op}_{op_b}"
     sched = FP8_POW2 if pow2 else dict(FP8_DEFAULT, block_m=block_m)
-    return gemm_kernel(f"scaled_mm_{pair}_{'bias' if with_bias else 'nobias'}_"
+    kind = {"fp32": "f32", True: "acc"}.get(acc) or ("bias" if with_bias else "nobias")
+    return gemm_kernel(f"scaled_mm_{pair}_{kind}_"
                        + ("pow2" if pow2 else f"m{block_m}"),
                        op_dtype=DTYPES[op], b_dtype=DTYPES[op_b or op], epilogue=ep,
                        **sched), ep
@@ -869,7 +881,7 @@ def _fp8_block_m(m: int) -> int:
     return DEFAULT["block_m"] if m <= FP8_SMALL_M else FP8_DEFAULT["block_m"]
 
 
-def scaled_mm(a, b, scale_a, scale_b, *, bias=None, out=None):
+def scaled_mm(a, b, scale_a, scale_b, *, bias=None, out=None, accumulate: bool = False):
     """bf16 (A @ B.T) * scale_a * scale_b (+ bias), fp8 operands, fp32
     accumulate: torch._scaled_mm's product with hk.ops.matmul's layout.
 
@@ -882,7 +894,10 @@ def scaled_mm(a, b, scale_a, scale_b, *, bias=None, out=None):
     per-channel, the two forms vLLM's fp8 linear layers use. `bias` is (N,).
     Up to FP8_DECODE_M rows, with K a multiple of 1024, it runs
     hk.ops.decode_gemm's kernel instead of the tiled one (one fp8 format
-    only). A with a row stride (rows FP8_POW2_STRIDE bytes or more apart, a
+    only). An fp32 `out` (M, N, contiguous) takes the product unrounded, and
+    with `accumulate=True` it is added to: out += (A @ B.T) * scale_a *
+    scale_b -- a weight gradient into its fp32 main_grad (Megatron's
+    gradient-accumulation fusion); no bias either way. A with a row stride (rows FP8_POW2_STRIDE bytes or more apart, a
     power of two) runs FP8_POW2's schedule; a caller that can pad such rows by
     64 bytes gets the faster default one (a dense K-16384 operand: 1.47 vs
     1.27 ms at M4096 N2048).
@@ -922,6 +937,19 @@ def scaled_mm(a, b, scale_a, scale_b, *, bias=None, out=None):
                              f"{length}")
         return t.reshape(length)
 
+    if accumulate or (out is not None and out.dtype == torch.float32):
+        if bias is not None:
+            raise ValueError("scaled_mm: an fp32 out takes no bias")
+        if out is None or out.shape != (m, n) or out.dtype != torch.float32 or not out.is_contiguous():
+            raise ValueError("scaled_mm(accumulate=True): out is the fp32 (M, N) tensor added to, "
+                             "contiguous")
+        kern, ep = _scaled_kernel(op, False, 0 if _pow2_rows(a, m, k) else _fp8_block_m(m), op_b,
+                                  pow2=_pow2_rows(a, m, k), acc=True if accumulate else "fp32")
+        tensors = {"scale_a": vec(scale_a, m, "scale_a").reshape(m, 1),
+                   "scale_b": vec(scale_b, n, "scale_b").contiguous(), "c_in": out}
+        prep = dict(_preparer(ep, m))
+        kern(a, b, out, *[prep[name](tensors[name]) for name in ep.tensors])
+        return out
     if _pow2_rows(a, m, k):
         kern, ep = _scaled_kernel(op, bias is not None, 0, op_b, pow2=True)
     elif op_b != op:

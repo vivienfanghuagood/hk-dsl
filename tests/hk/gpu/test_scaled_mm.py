@@ -92,6 +92,22 @@ def test_pow2_row_stride(dt, dt_b):
     _check(y, (a.float() @ b.float().T) * sa * sb)
 
 
+@pytest.mark.parametrize("accumulate", [False, True])
+def test_fp32_out(accumulate):
+    """A weight gradient: dY^T (N, M) e5m2 against X^T (K, M) e4m3, padded rows, into an fp32
+    main_grad -- overwritten, or added to."""
+    n, k, m = 512, 256, 1024
+    g = torch.Generator(device="cuda").manual_seed(5)
+    a = (torch.randn(n, m + 64, device="cuda", generator=g) * 0.5).to(FP8["e5m2"])[:, :m]
+    b = (torch.randn(k, m, device="cuda", generator=g) * 0.5).to(FP8["e4m3"])
+    c = torch.randn(n, k, device="cuda", generator=g)
+    sa, sb = torch.tensor(0.5, device="cuda"), torch.tensor(2.0, device="cuda")
+    want = (a.float() @ b.float().T) + (c if accumulate else 0)
+    got = scaled_mm(a, b, sa, sb, out=c, accumulate=accumulate)
+    assert got.data_ptr() == c.data_ptr()
+    assert ((got - want).abs().max() / want.abs().max()).item() < 1e-4
+
+
 def test_refusals():
     a, b = _operands(128, 256, 512, "e4m3")
     one = torch.ones((), device="cuda")
