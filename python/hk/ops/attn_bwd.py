@@ -6,16 +6,22 @@ new:
   * the forward keeps one more thing, the base-2 log-sum-exp of each query row's scaled scores
     (`attn_kernel(..., lse=True)`), and the backward rebuilds P = exp2(S * scale * log2 e - LSE)
     from it instead of redoing the online softmax;
-  * Delta = rowsum(dO . O) per query row, once, before the two kernels below (torch, for now);
+  * Delta = rowsum(dO . O) per query row, once, before the kernels below (`delta_kernel`);
   * `dq_kernel` is the forward's structure with K and V in LDS and this warp's Q *and* dO in
     registers: S^T = K Q^T and dP^T = V dO^T are [kv, q] col tiles, so LSE and Delta are row
     vectors of them -- one value per query, on the lane axis, as the forward's running max is --
     and dS^T = P^T . (dP^T - Delta) is the B operand of dQ^T += K^T dS^T, with K^T staged
     transposed in LDS the way the forward stages V^T;
-  * `dkdv_kernel` is the same algebra the other way round: a workgroup owns a block of KV rows
-    and walks the Q blocks; S = Q K^T and dP = dO V^T are [q, kv] col tiles (the warp's own K
-    and V in registers as the row-layout B operands), so P and dS are B operands of
-    dV^T += dO^T P and dK^T += Q^T dS, with Q^T and dO^T staged transposed in LDS.
+  * `dkv_kernel` is the same algebra the other way round, once for dK and once for dV: a
+    workgroup owns a block of KV rows and walks the Q blocks; S = Q K^T and dP = dO V^T are
+    [q, kv] col tiles (the warp's own K and V in registers as the row-layout B operands), so P
+    and dS are B operands of dV^T += dO^T P and dK^T += Q^T dS, with Q^T or dO^T staged
+    transposed in LDS.
+
+Measured and not taken: one fused dK/dV kernel. It holds both accumulators (128 VGPRs at head
+dim 128), so K and V had to live in LDS, the Q staging could not be prefetched, and its LDS held
+a CU to one workgroup: 2.39 ms at the 1.28B trainer's shape (B2 S2048 16x128, causal, R9700),
+against 1.10 ms for the two kernels here, which recompute S once more.
 
 The softmax scale enters S once (in log2 units, folded with log2 e as in the forward) and the
 outputs once: dQ and dK carry a factor `scale`, dV none.
@@ -197,152 +203,6 @@ def dq_kernel(name: str, *, head_dim: int = 128, q_block: int = 16, kv_block: in
     def _grid(p):
         heads = p.q.cols // head_dim if bnhd else p.q.depth
         return (hk.cdiv(p.q.rows, q_tile), heads, p.q.batch)
-
-    return hk.kernel(body, warps=warps, grid=_grid, name=name,
-                     max_vgprs=max_vgprs, min_occupancy=min_occupancy)
-
-
-
-
-def dkdv_kernel(name: str, *, head_dim: int = 128, q_step: int = 16, warps: int = 4,
-                causal: bool = False, scale: Optional[float] = None, bnhd: bool = False,
-                setprio: bool = True, max_vgprs: int = 256, min_occupancy: int = 1):
-    """dK and dV for one (head_dim, causal, scale). Arguments: q, k, v, do (bf16), lse and delta
-    (fp32 (B, H, 1, N)), dk and dv (bf16, k's layout). A workgroup owns 16 * warps KV rows of one
-    KV head -- 16 a warp, its K and V rows in registers -- and walks the Q blocks of every query
-    head reading that KV head (GQA sums over them here, no atomics), q_step rows at a time staged
-    through LDS as Q, dO and their transposes."""
-    if head_dim % 16 or q_step % 16:
-        raise ValueError(f"head_dim={head_dim}, q_step={q_step}: multiples of 16")
-    d_frags, q_frags = head_dim // 16, q_step // 16
-    kv_tile = 16 * warps
-    sc = scale if scale is not None else head_dim ** -0.5
-    scale_l2e = sc * LOG2E
-
-    # Each pair that is read the same way shares one tile, side by side, and so one granule set:
-    # Q | dO, Q^T | dO^T, and a warp's K | V. Six sets of address registers cost the 18 VGPRs
-    # that spilled at head_dim 128; three do not.
-    st_qo = hk.ST(bf16, q_step, 2 * head_dim)
-    st_kv = hk.ST(bf16, 16, 2 * head_dim)     # one warp's K | V rows: in LDS, not registers
-    ty_w = hk.RT(bf16, 16, head_dim, "row")
-
-
-    ty_op = hk.RT(bf16, 16, 16, "row")         # a 16x16 operand fragment
-    ty_s = hk.RT(fp32, 16, 16, "col")          # one [q, kv] fragment of S / P / dP / dS
-    ty_acc = hk.RT(fp32, 16, 16, "col")        # one [d, kv] fragment of dK^T / dV^T
-    ty_cv = hk.col_vec(ty_s)                   # one entry per query (a row of S)
-
-    def body(q: hk.Tensor[bf16], k: hk.Tensor[bf16], v: hk.Tensor[bf16],
-             dout: hk.Tensor[bf16], lse: hk.Tensor[fp32], delta: hk.Tensor[fp32],
-             dk: hk.Tensor[bf16], dv: hk.Tensor[bf16]):
-        g = hk.group(warps)
-        qo_s = hk.lds.alloc(st_qo, name="qo_s")
-        gr_qo = qo_s.granules(name="gr_qo")
-
-        # One 16-row slab a warp, stacked: a warp's own slab picked by its id has a granule set,
-        # where a runtime-indexed subtile of one big tile does not (its reads would each hold an
-        # address register, and at head_dim 128 those spill).
-        kv_s = hk.lds.alloc(st_kv, name="kv_s", count=warps)
-
-        b = hk.arch.block_idx.z
-        head_kv, kb = hk.arch.block_idx.y, hk.arch.block_idx.x
-        n_q = q.rows
-        n_kv = k.rows
-        if bnhd:
-            group = (q.cols // head_dim) // (k.cols // head_dim)
-        else:
-            group = q.depth // k.depth
-
-        def at(t, h, row, col):
-            if bnhd:
-                return t[hk.elem_coord(b, 0, row, h * head_dim + col)]
-            return t[hk.elem_coord(b, h, row, col)]
-
-        kv_tile_start = hk.max(hk.min(kb * kv_tile, n_kv - kv_tile), 0)
-        wid = hk.arch.warp_id()
-        kv_row = kv_tile_start + wid * 16
-
-        # K and V are read once per Q fragment as the B operands of S and dP. Holding them in
-        # registers next to the two accumulators (128 VGPRs at head_dim 128) spills, so the
-        # workgroup's K and V rows live in LDS and each warp reads its own 16 rows of them.
-        kv_s[wid].subtile(16, head_dim, 0, 0).store(at(k, head_kv, kv_row, 0).load(ty_w))
-        kv_s[wid].subtile(16, head_dim, 0, 1).store(at(v, head_kv, kv_row, 0).load(ty_w))
-        gr_kv = kv_s[wid].granules(name="gr_kv")
-        dk_c = [hk.zeros(ty_acc) for _ in range(d_frags)]
-        dv_c = [hk.zeros(ty_acc) for _ in range(d_frags)]
-
-        q_blocks = hk.cdiv(n_q, q_step)
-        qb0 = 0
-        if causal:
-            qb0 = kv_tile_start // q_step     # earlier Q blocks see none of these KV rows
-
-        def block_start(qi):
-            qi = hk.min(qi, q_blocks - 1)
-            return hk.min(qi * q_step, n_q - q_step)
-
-        def block_math(h, q_start, skip):
-            for f in range(q_frags):
-                with hk.scope():
-                    qr0 = q_start + 16 * f
-                    s = hk.zeros(ty_s)
-                    for kk in range(d_frags):
-                        qa = gr_qo.load_frag(f, kk, ty_op)
-                        ka = gr_kv.load_frag(0, kk, ty_op)
-                        hk.lds.wait_for(qa, ka)
-                        s += qa @ ka.T
-                    s *= scale_l2e
-                    if causal:
-                        # keep kv <= q: rows q = qr0 + r, columns kv = kv_row + c; fill c > r + qr0 -
-                        # kv_row, which is tril's `c > r - row_idx` at row_idx = kv_row - qr0
-                        s.tril_(kv_row - qr0, NEG_INF)
-                    if skip > 0:
-                        s.upper_fill_(skip - 16 * f, NEG_INF)
-                    s -= lse[hk.elem_coord(b, h, 0, qr0)].load(ty_cv)
-                    s.exp2_()                                    # P
-                    # One read of each dO fragment feeds both dP = dO V^T and, transposed in
-                    # registers (transpose_sep), dV^T += dO^T P: no second, transposed copy in
-                    # LDS, whose 16 KB kept the workgroups a WGP holds at two.
-                    p16 = s.to(bf16)
-                    dp = hk.zeros(ty_s)
-                    for kk in range(d_frags):
-                        oa = gr_qo.load_frag(f, d_frags + kk, ty_op)
-                        va = gr_kv.load_frag(0, d_frags + kk, ty_op)
-                        hk.lds.wait_for(oa, va)
-                        dp += oa @ va.T
-                        dv_c[kk] += hk.transpose_sep(oa) @ p16
-                    dp -= delta[hk.elem_coord(b, h, 0, qr0)].load(ty_cv)
-                    dp *= s                                      # dS
-                    ds16 = dp.to(bf16)
-                    for kk in range(d_frags):
-                        qa = gr_qo.load_frag(f, kk, ty_op)
-                        hk.lds.wait_for(qa)
-                        dk_c[kk] += hk.transpose_sep(qa) @ ds16
-
-        # Not prefetched: the next block's Q and dO in flight across the math would hold their
-        # staging registers (64 a lane at head_dim 128, four warps) next to the two
-        # accumulators, and that spills. Several workgroups a WGP cover the load instead.
-        for hh in range(group):
-            h = head_kv * group + hh
-            for qi in range(qb0, q_blocks):
-                q_lo = qi * q_step
-                q_start = hk.min(q_lo, n_q - q_step)
-                skip = q_lo - q_start
-                hk.arch.barrier()
-                # synchronous workgroup copies: no staging buffer held for the kernel's life
-                g.load(qo_s.subtile(q_step, head_dim, 0, 0), at(q, h, q_start, 0))
-                g.load(qo_s.subtile(q_step, head_dim, 0, 1), at(dout, h, q_start, 0))
-                hk.arch.barrier(drain=True)
-                block_math(h, q_start, skip)
-
-        for i in range(d_frags):
-            c = dk_c[i]
-            c *= sc
-            at(dk, head_kv, kv_row, 16 * i).store(hk.transpose(c))
-            at(dv, head_kv, kv_row, 16 * i).store(hk.transpose(dv_c[i]))
-
-    def _grid(p):
-        heads = p.k.cols // head_dim if bnhd else p.k.depth
-        return (hk.cdiv(p.k.rows, kv_tile), heads, p.k.batch)
 
     return hk.kernel(body, warps=warps, grid=_grid, name=name,
                      max_vgprs=max_vgprs, min_occupancy=min_occupancy)
@@ -570,4 +430,157 @@ def delta_kernel(name: str, *, head_dim: int = 128, warps: int = 4, bnhd: bool =
     return hk.kernel(body, warps=warps, grid=_grid, name=name)
 
 
-__all__ = ["dq_kernel", "dkdv_kernel", "dkv_kernel", "delta_kernel"]
+
+
+#: Rows of the delta kernel's workgroup; LSE and Delta are padded to a multiple of it.
+DELTA_WARPS = 4
+#: Archs the backward is built and checked on. gfx1100 is not one yet: its dQ kernel at head
+#: dim 128 spills (236 B/lane) under the VOPD-free rebuild gfx11 needs.
+ARCHES = ("gfx1201",)
+HEAD_DIMS = (64, 128)
+#: The shortest sequence every kernel's tile fits in: the forward's and the backward's 192-row
+#: tiles (12 warps x 16 rows). A tile is moved back to end on the last row, so it needs that many.
+MIN_SEQ = 192
+
+_KERNELS: dict = {}
+_FWD: dict = {}
+
+
+def _kernels(head_dim: int, causal: bool, scale: Optional[float], n: int):
+    """The forward (with LSE) for a length-n call and the four backward kernels, built once.
+    Only the forward's tiling depends on n; the backward's does not."""
+    from . import attn as _attn  # noqa: PLC0415
+
+    default = scale is None or abs(scale - head_dim ** -0.5) < 1e-12
+    sc = None if default else float(scale)
+    til = _attn._tiling(head_dim, causal, n)
+    key = (head_dim, causal, sc)
+    sfx = f"d{head_dim}{'_causal' if causal else ''}"
+    if not default:
+        import struct  # noqa: PLC0415
+        sfx += f"_s{struct.unpack('<Q', struct.pack('<d', sc))[0]:016x}"
+    k = _KERNELS.get(key)
+    if k is None:
+        k = _KERNELS[key] = dict(
+            delta=delta_kernel(f"attn_bwd_delta_bnhd_d{head_dim}", head_dim=head_dim,
+                               warps=DELTA_WARPS, bnhd=True),
+            dq=dq_kernel(f"attn_bwd_dq_bnhd_{sfx}", head_dim=head_dim, causal=causal, scale=sc,
+                         bnhd=True),
+            dk=dkv_kernel(f"attn_bwd_dk_bnhd_{sfx}", mode="dk", head_dim=head_dim,
+                          causal=causal, scale=sc, bnhd=True),
+            dv=dkv_kernel(f"attn_bwd_dv_bnhd_{sfx}", mode="dv", head_dim=head_dim,
+                          causal=causal, scale=sc, bnhd=True))
+    fk = key + (bool(til),)
+    if fk not in _FWD:
+        _FWD[fk] = _attn.attn_kernel(f"attn_fwd_lse_bnhd_{sfx}{'_tiled' if til else ''}",
+                                  head_dim=head_dim, causal=causal, scale=sc, lse=True,
+                                  bnhd=True, **til)
+    return dict(k, fwd=_FWD[fk])
+
+
+def _bnhd(t):
+    """(B, S, H, D) -> the (B, 1, S, H * D) global the bnhd kernels address: in place when H and
+    D are contiguous and the batch is S rows apart (a BSHD tensor, or a slice of a fused QKV
+    one along its heads); otherwise (SBHD, say) a BSHD copy."""
+    b, s, h, d = t.shape
+    if not (t.stride(3) == 1 and t.stride(2) == d and t.stride(0) == s * t.stride(1)):
+        t = t.contiguous()
+    return t.flatten(2).unsqueeze(1)
+
+
+def _pad(n: int) -> int:
+    r = 16 * DELTA_WARPS
+    return -(-n // r) * r
+
+
+def why_unsupported(q, k, v, causal: bool = False) -> str:
+    """Why `attention` cannot run these operands, or ''."""
+    import torch  # noqa: PLC0415
+
+    from ..target import current_arch  # noqa: PLC0415
+
+    arch = current_arch()
+    if arch not in ARCHES:
+        return f"{arch}: the backward is built for {ARCHES}"
+    if q.dtype != torch.bfloat16 or k.dtype != q.dtype or v.dtype != q.dtype:
+        return f"bf16 only, got {q.dtype}/{k.dtype}/{v.dtype}"
+    if q.dim() != 4 or k.dim() != 4 or v.dim() != 4:
+        return "expects (B, S, H, D)"
+    if k.shape != v.shape:
+        return f"k and v must match: {tuple(k.shape)} vs {tuple(v.shape)}"
+    b, s, h, d = q.shape
+    if k.shape[0] != b or k.shape[3] != d or k.shape[1] != s:
+        return f"q {tuple(q.shape)} and k {tuple(k.shape)}: same batch, length and head_dim"
+    if d not in HEAD_DIMS:
+        return f"head_dim {d}: have {HEAD_DIMS}"
+    if k.shape[2] == 0 or h % k.shape[2]:
+        return f"GQA needs h_kv to divide h, got {h} and {k.shape[2]}"
+    if s < MIN_SEQ:
+        return f"sequence {s} is below {MIN_SEQ}, the kernels' tile"
+    for t in (q, k, v):
+        if t.stride(3) != 1:
+            return "the head dimension must be contiguous"
+    return ""
+
+
+class _Attention:
+    """torch.autograd.Function, built on first use (hk imports without torch)."""
+    fn = None
+
+
+def _function():
+    if _Attention.fn is not None:
+        return _Attention.fn
+    import torch  # noqa: PLC0415
+
+    class Attention(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, q, k, v, causal, scale):
+            b, s, h, d = q.shape
+            kn = _kernels(d, causal, scale, s)
+            qb, kb, vb = _bnhd(q), _bnhd(k), _bnhd(v)
+            o = torch.empty(b, s, h, d, device=q.device, dtype=q.dtype)
+            lse = torch.empty(b, h, 1, _pad(s), device=q.device, dtype=torch.float32)
+            kn["fwd"](qb, kb, vb, _bnhd(o), lse)
+            ctx.save_for_backward(qb, kb, vb, o, lse)
+            ctx.causal, ctx.scale, ctx.h_kv = causal, scale, k.shape[2]
+            return o
+
+        @staticmethod
+        def backward(ctx, do):
+            qb, kb, vb, o, lse = ctx.saved_tensors
+            b, s, h, d = o.shape
+            kn = _kernels(d, ctx.causal, ctx.scale, s)
+            dob, ob = _bnhd(do), _bnhd(o)
+            delta = torch.empty_like(lse)
+            kn["delta"](ob, dob, delta)
+            dq = torch.empty(b, s, h, d, device=o.device, dtype=o.dtype)
+            dk = torch.empty(b, s, ctx.h_kv, d, device=o.device, dtype=o.dtype)
+            dv = torch.empty_like(dk)
+            kn["dq"](qb, kb, vb, dob, lse, delta, _bnhd(dq))
+            kn["dk"](qb, kb, vb, dob, lse, delta, _bnhd(dk))
+            kn["dv"](qb, kb, vb, dob, lse, delta, _bnhd(dv))
+            return dq, dk, dv, None, None
+
+    _Attention.fn = Attention
+    return Attention
+
+
+def attention(q, k, v, *, causal: bool = False, scale: Optional[float] = None):
+    """Flash attention with a backward, for training: (B, S, H, D) bf16 q and (B, S, H_kv, D)
+    k, v (MHA or GQA) -> o (B, S, H, D), differentiable in q, k and v.
+
+    BSHD, the layout a QKV projection writes: q, k and v may be views of one fused (B, S,
+    H + 2 H_kv, D) tensor (read in place); other strides (SBHD) are copied once. Causal is
+    top-left with equal lengths. `scale` defaults to head_dim ** -0.5. gfx1201 (RDNA4),
+    head_dim 64 or 128, S >= 256. The forward keeps a base-2 log-sum-exp a row (fp32), the
+    backward runs a Delta kernel and the dQ, dK and dV kernels; dK and dV of a shared KV head are
+    summed over its query heads inside the kernels."""
+    why = why_unsupported(q, k, v, causal)
+    if why:
+        raise ValueError(f"hk.ops.attn_bwd.attention: {why}")
+    return _function().apply(q, k, v, causal, scale)
+
+
+__all__ = ["dq_kernel", "dkv_kernel", "delta_kernel", "attention", "why_unsupported",
+           "HEAD_DIMS", "ARCHES", "MIN_SEQ"]
