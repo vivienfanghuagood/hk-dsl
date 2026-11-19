@@ -83,7 +83,7 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
                 write_pos: int = 2, lds_buffers: int = 1, stagger: int = 0,
                 stream_a: bool = False, setprio: bool = False, sched: int = 0,
                 max_vgprs: int = 256, min_occupancy: int = 1, epilogue=None,
-                op_dtype=bf16):
+                op_dtype=bf16, b_dtype=None):
     """The default tiling is `big_config` from the C++: 128x128x64, 8 warps.
 
     `op_dtype=hk.i8`: A and B are int8 and the WMMA is v_wmma_i32_16x16x16_iu8
@@ -95,7 +95,9 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
     `op_dtype=hk.fp8e4m3` or `hk.fp8e5m2` (gfx1201): A and B are OCP fp8 and
     the WMMA is v_wmma_f32_16x16x16_fp8_fp8 (bf8_bf8 for e5m2), twice the bf16
     rate; the accumulators are fp32, stored to a bf16 C or through an epilogue
-    (`scaled_mm`'s: acc * scale_a * scale_b).
+    (`scaled_mm`'s: acc * scale_a * scale_b). `b_dtype` (default `op_dtype`)
+    makes B the other fp8 format: e5m2 x e4m3 is a training backward's
+    product (a gradient against a weight), v_wmma_f32_16x16x16_bf8_fp8.
 
     The default LDS is one buffer, not the C++'s two. Two let the next
     K-tile be written while this one is read, one barrier a tile; but a
@@ -155,9 +157,13 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
                             or get_target(current_arch()).wave != 32):
         raise ValueError(f"op_dtype={op_dtype}: {current_arch()} has no fp8 WMMA "
                          f"(gfx1201 does)")
+    b_dtype = op_dtype if b_dtype is None else b_dtype
+    if b_dtype is not op_dtype and not (op_dtype in FP8 and b_dtype in FP8):
+        raise ValueError(f"b_dtype={b_dtype}: only fp8 mixes (e4m3 with e5m2), and A is "
+                         f"{op_dtype}")
     acc_t = i32 if op_dtype is i8 else fp32
     st_a = hk.ST(op_dtype, block_m, k_step)
-    st_b = hk.ST(op_dtype, block_n, k_step)
+    st_b = hk.ST(b_dtype, block_n, k_step)
     inited = epilogue is not None and getattr(epilogue, "init", None) is not None
     if inited and op_dtype is i8:
         raise ValueError("an i8 GEMM's accumulators are i32: no init_from epilogue")
@@ -178,7 +184,7 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
         buf_a = g.stage_buffer(As, name="buf_a")
         buf_b = g.stage_buffer(Bs, name="buf_b")
 
-        B_tile = [hk.zeros(hk.RT(op_dtype, split_n, dot_slice, "row"))
+        B_tile = [hk.zeros(hk.RT(b_dtype, split_n, dot_slice, "row"))
                   for _ in range(n_split)]
         if stream_a:
             A_frag = [hk.zeros(hk.RT(op_dtype, 16, dot_slice, "row")) for _ in range(2)]
@@ -456,7 +462,7 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
     if op_dtype is i8 or op_dtype in FP8:
         # i8 operands: C i32 (raw accumulators) unless an epilogue retypes it;
         # fp8 operands: C bf16, from fp32 accumulators
-        body.__annotations__.update(a=hk.Tensor[op_dtype], b=hk.Tensor[op_dtype],
+        body.__annotations__.update(a=hk.Tensor[op_dtype], b=hk.Tensor[b_dtype],
                                     c=hk.Tensor[i32 if op_dtype is i8 else bf16])
         body.__signature__ = inspect.signature(body).replace(parameters=[
             p.replace(annotation=body.__annotations__[p.name]) if p.name in ("a", "b", "c") else p
@@ -806,10 +812,12 @@ def _scale_epilogue(with_bias: bool):
 
 
 @functools.lru_cache(maxsize=None)
-def _scaled_kernel(op: str, with_bias: bool, block_m: int):
+def _scaled_kernel(op: str, with_bias: bool, block_m: int, op_b: Optional[str] = None):
     ep = _scale_epilogue(with_bias)
-    return gemm_kernel(f"scaled_mm_{op}_{'bias' if with_bias else 'nobias'}_m{block_m}",
-                       op_dtype=DTYPES[op], epilogue=ep, **dict(FP8_DEFAULT, block_m=block_m)), ep
+    pair = op if op_b in (None, op) else f"{op}_{op_b}"
+    return gemm_kernel(f"scaled_mm_{pair}_{'bias' if with_bias else 'nobias'}_m{block_m}",
+                       op_dtype=DTYPES[op], b_dtype=DTYPES[op_b or op], epilogue=ep,
+                       **dict(FP8_DEFAULT, block_m=block_m)), ep
 
 
 @functools.lru_cache(maxsize=None)
@@ -835,8 +843,10 @@ def scaled_mm(a, b, scale_a, scale_b, *, bias=None, out=None):
     """bf16 (A @ B.T) * scale_a * scale_b (+ bias), fp8 operands, fp32
     accumulate: torch._scaled_mm's product with hk.ops.matmul's layout.
 
-    `a` is (M, K) and `b` (N, K), both float8_e4m3fn or both float8_e5m2 (OCP;
-    the WMMA is v_wmma_f32_16x16x16_fp8_fp8 or bf8_bf8, twice the bf16 rate).
+    `a` is (M, K) and `b` (N, K), float8_e4m3fn or float8_e5m2 (OCP; the WMMA
+    is v_wmma_f32_16x16x16_fp8_fp8, bf8_bf8, or for a mixed pair -- a
+    training backward's gradient against a weight -- bf8_fp8 / fp8_bf8, all
+    twice the bf16 rate).
     `scale_a` is one value or one a row of A ((M,) or (M, 1)); `scale_b` one
     value or one a row of B ((N,) or (1, N)) -- per-tensor or per-token x
     per-channel, the two forms vLLM's fp8 linear layers use. `bias` is (N,).
@@ -850,10 +860,10 @@ def scaled_mm(a, b, scale_a, scale_b, *, bias=None, out=None):
     from ..templates.gemm import _preparer  # noqa: PLC0415
 
     fp8 = {torch.float8_e4m3fn: "fp8e4m3", torch.float8_e5m2: "fp8e5m2"}
-    if a.dtype != b.dtype or a.dtype not in fp8:
-        raise TypeError(f"scaled_mm: A and B both float8_e4m3fn or both float8_e5m2, "
+    if a.dtype not in fp8 or b.dtype not in fp8:
+        raise TypeError(f"scaled_mm: A and B float8_e4m3fn or float8_e5m2, "
                         f"got {a.dtype} and {b.dtype}")
-    op = fp8[a.dtype]
+    op, op_b = fp8[a.dtype], fp8[b.dtype]
     tgt = get_target(current_arch())
     if op not in tgt.mma or tgt.wave != 32:
         raise ValueError(f"scaled_mm: {current_arch()} has no fp8 WMMA (gfx1201 does)")
@@ -878,7 +888,9 @@ def scaled_mm(a, b, scale_a, scale_b, *, bias=None, out=None):
                              f"{length}")
         return t.reshape(length)
 
-    if _fp8_decodes(m, n, k):
+    if op_b != op:
+        kern, ep = _scaled_kernel(op, bias is not None, _fp8_block_m(m), op_b)
+    elif _fp8_decodes(m, n, k):
         from .decode_gemm import tokens_for  # noqa: PLC0415
 
         kern, ep = _scaled_decode_kernel(op, bias is not None, tokens_for(m))

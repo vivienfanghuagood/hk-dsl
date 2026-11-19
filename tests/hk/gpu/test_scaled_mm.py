@@ -1,6 +1,6 @@
 """hk.ops.gemm.scaled_mm, the fp8 GEMM on gfx1201 (hk.ops.gemm's fp8 WMMA, op_dtype=fp8e4m3/fp8e5m2):
 against the fp32 product of the same fp8 values, per-tensor and per-row x per-column scales, with
-and without a bias, a ragged M; repeatable bit for bit; the refusals."""
+and without a bias, a ragged M; a mixed e5m2 x e4m3 pair; repeatable bit for bit; the refusals."""
 
 from __future__ import annotations
 
@@ -19,10 +19,10 @@ from hk.ops.gemm import FP8_DEFAULT, scaled_mm  # noqa: E402
 FP8 = {"e4m3": torch.float8_e4m3fn, "e5m2": torch.float8_e5m2}
 
 
-def _operands(m, n, k, dt, seed=0):
+def _operands(m, n, k, dt, seed=0, dt_b=None):
     g = torch.Generator(device="cuda").manual_seed(seed)
     a = (torch.randn(m, k, device="cuda", generator=g) * 0.5).to(FP8[dt])
-    b = (torch.randn(n, k, device="cuda", generator=g) * 0.5).to(FP8[dt])
+    b = (torch.randn(n, k, device="cuda", generator=g) * 0.5).to(FP8[dt_b or dt])
     return a, b
 
 
@@ -64,11 +64,23 @@ def test_matches_torch_scaled_mm():
     assert (y.float() - t.float()).abs().max() / t.float().abs().max() < 8e-3
 
 
+@pytest.mark.parametrize("dt,dt_b", [("e5m2", "e4m3"), ("e4m3", "e5m2")])
+@pytest.mark.parametrize("m,n,k", [(4096, 2048, 6144), (300, 512, 1024)])
+def test_mixed_pair(dt, dt_b, m, n, k):
+    """A training backward's product: an e5m2 gradient against an e4m3 weight (or the other way)."""
+    a, b = _operands(m, n, k, dt, seed=3, dt_b=dt_b)
+    sa, sb = torch.tensor(0.75, device="cuda"), torch.tensor(1.25, device="cuda")
+    y = scaled_mm(a, b, sa, sb)
+    _check(y, (a.float() @ b.float().T) * 0.75 * 1.25)
+    t = torch._scaled_mm(a, b.T, scale_a=sa, scale_b=sb, out_dtype=torch.bfloat16)
+    assert (y.float() - t.float()).abs().max() / t.float().abs().max() < 8e-3
+
+
 def test_refusals():
     a, b = _operands(128, 256, 512, "e4m3")
     one = torch.ones((), device="cuda")
     with pytest.raises(TypeError):
-        scaled_mm(a, b.to(torch.float8_e5m2), one, one)
+        scaled_mm(a, b.to(torch.int8), one, one)
     with pytest.raises(TypeError):
         scaled_mm(a.to(torch.bfloat16), b.to(torch.bfloat16), one, one)
     with pytest.raises(ValueError):
