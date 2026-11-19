@@ -32,6 +32,7 @@ cross-entropy) against FP8 + hk, ms per iteration and tokens/s, plus loss agreem
 ```bash
 cd Megatron-LM
 python3 -m hk.integration --status          # the megatron_* routes this GPU will get
+HK_MEGATRON_ATTN=1 HK_MEGATRON_FC1_BWD=1 HK_MEGATRON_LMHEAD_WGRAD=1 \
 torchrun --nproc-per-node 1 -m hk.integration.megatron pretrain_gpt.py \
     TBD: model and training flags \
     --fp8-format hybrid --fp8-recipe delayed \
@@ -39,8 +40,9 @@ torchrun --nproc-per-node 1 -m hk.integration.megatron pretrain_gpt.py \
     --disable-bias-linear --swiglu --attention-dropout 0 ...
 ```
 
-`HK_MEGATRON_ATTN=0`, `HK_MEGATRON_FC1_BWD=0` and `HK_MEGATRON_LMHEAD_WGRAD=0` turn the pieces off one at a time, and
-`HK_PATCH_MEGATRON=0` turns off all of them.
+Each piece is off until its variable is set, so a piece can be turned on, or left off, on its own.
+`HK_MEGATRON_ATTN=sdpa` puts torch's SDPA in Megatron's core attention instead: the best stock attention, which is the
+baseline arm. `HK_PATCH_MEGATRON=0` turns all of them off.
 
 ## Tune the GEMMs first
 

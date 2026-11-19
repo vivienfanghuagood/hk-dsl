@@ -5,7 +5,8 @@ Megatron's or TE's source.
     python -m hk.integration.megatron pretrain_gpt.py <Megatron's arguments>
     # or: torchrun ... -m hk.integration.megatron pretrain_gpt.py ...
 
-What it installs, each under its own switch (`python -m hk.integration --status` lists them):
+What it installs, each under its own switch (`python -m hk.integration --status` lists the first
+two). All are off until asked for: the recipe sets them.
 
 * `megatron_attn` (HK_MEGATRON_ATTN): Megatron's core attention is hk.ops.attn_bwd.attention (flash
   attention forward and backward). It replaces TE's DotProductAttention, which runs unfused on gfx1201
@@ -21,7 +22,7 @@ What it installs, each under its own switch (`python -m hk.integration --status`
   - TE's own GEMM ignores strides, so a padded tensor never reaches it: those two GEMMs go to hk, every
     other GEMM to TE, and anything padded headed for TE raises.
   - Needs --disable-bias-linear and SwiGLU.
-* `megatron_lmhead_wgrad` (HK_MEGATRON_LMHEAD_WGRAD): configuration, no hk kernel. Megatron's output
+* HK_MEGATRON_LMHEAD_WGRAD=1: configuration, no hk kernel and so no route. Megatron's output
   layer accumulates its weight gradient through apex's fused_weight_gradient_mlp_cuda, which picks a slow
   tile on gfx1201. This routes it through TE's general_gemm (hipBLASLt, tunable with TE's algorithm cache).
 
@@ -262,13 +263,17 @@ def _install_lmhead_wgrad() -> None:
     _log("output layer weight-gradient accumulation -> TE general_gemm")
 
 
-_INSTALLERS = (("megatron_attn", _install_attention), ("megatron_fc1_bwd", _install_fc1_bwd),
-               ("megatron_lmhead_wgrad", _install_lmhead_wgrad))
+_INSTALLERS = (("megatron_attn", _install_attention), ("megatron_fc1_bwd", _install_fc1_bwd))
 
 
 def install(env=None) -> list:
-    """Install every megatron route its switch turns on; the names installed."""
+    """Install every megatron route its switch turns on, and the LM-head configuration if
+    HK_MEGATRON_LMHEAD_WGRAD=1; the names installed."""
+    env = os.environ if env is None else env
     done = []
+    if env.get("HK_MEGATRON_LMHEAD_WGRAD", "") in switches.ON and not switches.disabled(env):
+        _install_lmhead_wgrad()
+        done.append("lmhead_wgrad")
     for name, fn in _INSTALLERS:
         if switches.enabled(name, env):
             if name == "megatron_attn":

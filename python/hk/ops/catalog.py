@@ -50,7 +50,8 @@ FAMILIES = [
                                "(Transformer Engine's delayed scaling), and Megatron's SwiGLU backward "
                                "fused with it; padded row strides for the GEMMs that read them",
          entries=["hk.ops.fp8_cast.cast_transpose", "hk.ops.fp8_cast.swiglu_bwd_cast_transpose"],
-         arches=("gfx1201",), dtypes="bf16 in, fp8 (e4m3, e5m2) out, fp32 amax", routes=[],
+         arches=("gfx1201",), dtypes="bf16 in, fp8 (e4m3, e5m2) out, fp32 amax",
+         routes=["megatron_fc1_bwd"],
          tests=["test_fp8_cast.py"]),
     dict(name="scaled_mm", what="an fp8 GEMM with per-tensor or per-token x per-channel scales (torch._scaled_mm's product)",
          entries=["hk.ops.scaled_mm"],
@@ -82,7 +83,7 @@ FAMILIES = [
                                "and the dQ, dK, dV backward, as one autograd function; BSHD, "
                                "MHA or GQA, causal or not, head_dim 64 or 128",
          entries=["hk.ops.attn_bwd.attention"],
-         arches=("gfx1100", "gfx1201"), dtypes="bf16", routes=[], tests=["test_attn_bwd.py"]),
+         arches=("gfx1100", "gfx1201"), dtypes="bf16", routes=["megatron_attn"], tests=["test_attn_bwd.py"]),
     dict(name="sdpa", what="`F.scaled_dot_product_attention`, on hk's attention where it fits "
                            "and torch's elsewhere",
          entries=["hk.ops.sdpa.scaled_dot_product_attention"],

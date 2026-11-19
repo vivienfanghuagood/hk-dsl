@@ -257,19 +257,17 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
     _R("sdpa_k3", "ops", "HK_SDPA_K3", True, ("gfx1100",),
        "hk.ops.sdpa's non-causal head_dim-128 calls on its newer kernel (hk.ops.attn_k3)",
        "per-call error 2.95e-5 vs the current path's 4.50e-5 at Qwen-Image's shape (#24)"),
-    _R("megatron_attn", "megatron", "HK_MEGATRON_ATTN", True, ("gfx1201",),
+    _R("megatron_attn", "megatron", "HK_MEGATRON_ATTN", False, (),
        "Megatron-LM's core attention on hk.ops.attn_bwd.attention (flash attention forward and "
        "backward) in place of TE's unfused DotProductAttention: causal or unmasked self-attention, "
        "no dropout, head_dim 64 or 128 (python -m hk.integration.megatron)",
-       "TBD: the recipe's final A/B (docs/recipes/megatron-rdna4.md)"),
-    _R("megatron_fc1_bwd", "megatron", "HK_MEGATRON_FC1_BWD", True, ("gfx1201",),
+       "opt-in until the recipe's A/B is published (docs/megatron.md); the kernels are "
+       "hk.ops.attn_bwd's (tests/hk/gpu/test_attn_bwd.py)"),
+    _R("megatron_fc1_bwd", "megatron", "HK_MEGATRON_FC1_BWD", False, (),
        "the MLP's fc1 backward under FP8 delayed scaling: SwiGLU backward + fp8 cast as one kernel "
        "(hk.ops.fp8_cast), padded e5m2 gradient, fc1's dgrad and wgrad on hk.ops.gemm.scaled_mm",
-       "TBD: the recipe's final A/B (docs/recipes/megatron-rdna4.md)"),
-    _R("megatron_lmhead_wgrad", "megatron", "HK_MEGATRON_LMHEAD_WGRAD", True, ("gfx1201",),
-       "configuration, no hk kernel: the output layer's weight-gradient accumulation through TE's "
-       "general_gemm (hipBLASLt) instead of apex's fused_weight_gradient_mlp_cuda",
-       "TBD: the recipe's final A/B (docs/recipes/megatron-rdna4.md)"),
+       "opt-in: a 3-seed loss check on real text is open (the hook's loss runs lower than "
+       "baseline's); docs/megatron.md"),
 )}
 
 
