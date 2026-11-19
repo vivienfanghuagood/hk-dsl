@@ -6,6 +6,12 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+- New `hk.ops.attn_bwd.attention`: flash attention for training on gfx1201 (RDNA4), an autograd function with the
+  dQ, dK and dV backward in the DSL. BSHD bf16 (views of a fused QKV tensor read in place), MHA or GQA, causal or
+  not, head_dim 64 or 128. On an R9700, fwd+bwd is 1.75-2.32x torch SDPA (AOTriton) on six training shapes
+  (`tools/attn-bwd-gfx1201/bench.py`). `hk.ops.attention`'s kernel can also write each row's log-sum-exp
+  (`attn_kernel(..., lse=True)`).
+
 ## 0.9.24
 
 hk-dsl 0.9.24: a patch release. SGLang-Diffusion's `sgld_linear` no longer deadlocks a server with more than
