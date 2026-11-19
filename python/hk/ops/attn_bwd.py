@@ -481,11 +481,16 @@ def _kernels(head_dim: int, causal: bool, scale: Optional[float], n: int):
 def _bnhd(t):
     """(B, S, H, D) -> the (B, 1, S, H * D) global the bnhd kernels address: in place when H and
     D are contiguous and the batch is S rows apart (a BSHD tensor, or a slice of a fused QKV
-    one along its heads); otherwise (SBHD, say) a BSHD copy."""
+    one along its heads) or there is one batch (SBHD at B = 1, Megatron's micro-batch of one,
+    whose batch stride is never used); otherwise (SBHD at B > 1, say) a BSHD copy."""
     b, s, h, d = t.shape
-    if not (t.stride(3) == 1 and t.stride(2) == d and t.stride(0) == s * t.stride(1)):
+    if not (t.stride(3) == 1 and t.stride(2) == d and (b == 1 or t.stride(0) == s * t.stride(1))):
         t = t.contiguous()
-    return t.flatten(2).unsqueeze(1)
+    t = t.flatten(2).unsqueeze(1)
+    if b == 1:
+        # the runtime takes a batch stride of depth x rows x row stride; at B = 1 it is unused
+        t = t.as_strided(t.shape, (s * t.stride(2), s * t.stride(2), t.stride(2), 1))
+    return t
 
 
 def _pad(n: int) -> int:
@@ -571,7 +576,8 @@ def attention(q, k, v, *, causal: bool = False, scale: Optional[float] = None):
     k, v (MHA or GQA) -> o (B, S, H, D), differentiable in q, k and v.
 
     BSHD, the layout a QKV projection writes: q, k and v may be views of one fused (B, S,
-    H + 2 H_kv, D) tensor (read in place); other strides (SBHD) are copied once. Causal is
+    H + 2 H_kv, D) tensor (read in place), and so may SBHD views at B = 1; other strides (SBHD
+    at B > 1, heads not D apart) are copied once. Causal is
     top-left with equal lengths. `scale` defaults to head_dim ** -0.5. gfx1201 (RDNA4),
     head_dim 64 or 128, S >= 192. The forward keeps a base-2 log-sum-exp a row (fp32), the
     backward runs a Delta kernel and the dQ, dK and dV kernels; dK and dV of a shared KV head are

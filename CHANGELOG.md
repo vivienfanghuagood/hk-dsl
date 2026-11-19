@@ -6,6 +6,9 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+- `hk.ops.attn_bwd.attention` reads SBHD q, k, v and the output gradient in place when the batch is one (Megatron's
+  micro-batch of one), instead of copying them to BSHD.
+
 - New `hk.ops.fp8_cast` (gfx1201), fp8 casts for training: `cast_transpose` (bf16 to fp8, rowwise and transposed, with
   amax, Transformer Engine's delayed-scaling semantics) and `swiglu_bwd_cast_transpose`, Megatron-LM's SwiGLU backward
   and that cast in one pass. Both write padded row strides for the GEMMs that read them. On an R9700 at 4096 x 8192 the
