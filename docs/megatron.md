@@ -64,6 +64,24 @@ how to save and reload the results, and how to check that they loaded. The basel
 - **Not covered:** tensor and pipeline parallel runs at scale (TBD: what was tested), MXFP8, current scaling,
   gfx1100.
 
+## Measured and not taken
+
+- **An hk cross-entropy kernel.** hk has one (two passes over the bf16 logits, fp32 log-sum-exp and gradient, the
+  target entry's gradient in fp32; branch `claude/a-fused-ce`, not shipped). Against fp64, on one R9700 at
+  (4096 x 50304), fwd+bwd:
+
+  | | loss rel. error | grad rel. L2 | target grads zeroed (p_t 0.998-0.99999) | ms |
+  |---|---|---|---|---|
+  | Megatron, unfused (`vocab_parallel_cross_entropy`) | 7.8e-8 | 1.7e-3 | 0 | 19.9 |
+  | Transformer Engine 2.21, fused | 7.4e-8 | 1.7e-3 | 0 | 5.08 |
+  | hk | 7.4e-8 | 1.7e-3 | 0 | 4.31 |
+
+  TE's fused kernel is already close to the bandwidth floor (about 2 ms), and hk would save about 3 ms an
+  iteration, so the recipe uses TE's. Megatron-LM rejects TE's fused cross-entropy as unstable ("stability
+  issues"). That covers TE before 2.19, which kept the gradient in bf16 and zeroed a near-certain target's
+  (TransformerEngine #3193); 2.21 passes the same test. TBD: how the recipe selects it.
+- **Attention backward beyond today's.** Measured ceiling and the levers left: `tools/attn-bwd-gfx1201/README.md`.
+
 ## Reproduce the A/B
 
 TBD: `tools/megatron-rdna4/run.sh` (one command per arm, mock or real data, the same tuning), and the expected output.
