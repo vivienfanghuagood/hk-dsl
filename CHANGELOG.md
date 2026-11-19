@@ -6,6 +6,12 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+- New `hk.ops.attn_bwd.attention`: flash attention for training on gfx1201 (RDNA4), an autograd function with the
+  dQ, dK and dV backward in the DSL. BSHD bf16 (views of a fused QKV tensor read in place), MHA or GQA, causal or
+  not, head_dim 64 or 128. On an R9700, fwd+bwd is 1.75-2.32x torch SDPA (AOTriton) on six training shapes
+  (`tools/attn-bwd-gfx1201/bench.py`). `hk.ops.attention`'s kernel can also write each row's log-sum-exp
+  (`attn_kernel(..., lse=True)`).
+
 - `hk.ops.scaled_mm` (gfx1201) takes a mixed fp8 pair, e5m2 x e4m3 or e4m3 x e5m2: a training backward's gradient
   against a weight. When A's rows are a power of two of at least 16 KB apart (a K-16384 operand), it runs a
   128x128x128 schedule. Rows that far apart share a memory channel on gfx1201, and the default tile drops to about half

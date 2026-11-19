@@ -826,6 +826,7 @@ row-wise and elementwise ops are being unified by the `hk.templates` work.
 
 OPS_EXTRA = [
     ("hk.ops.sdpa", ["scaled_dot_product_attention"]),
+    ("hk.ops.attn_bwd", ["attention", "why_unsupported"]),
     ("hk.ops.paged", ["split_kernel", "fused_kernel", "merge_kernel", "plan_splits",
                       "merge_splits"]),
     ("hk.ops.paged_prefill", ["kernel_for", "work_list"]),

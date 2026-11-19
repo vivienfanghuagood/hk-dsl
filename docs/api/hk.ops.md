@@ -39,6 +39,8 @@ row-wise and elementwise ops are being unified by the `hk.templates` work.
 - [`hk.ops.attention`](#hkopsattention)
 - [`hk.ops.scaled_mm`](#hkopsscaled_mm)
 - [`hk.ops.sdpa.scaled_dot_product_attention`](#hkopssdpascaled_dot_product_attention)
+- [`hk.ops.attn_bwd.attention`](#hkopsattn_bwdattention)
+- [`hk.ops.attn_bwd.why_unsupported`](#hkopsattn_bwdwhy_unsupported)
 - [`hk.ops.paged.split_kernel`](#hkopspagedsplit_kernel)
 - [`hk.ops.paged.fused_kernel`](#hkopspagedfused_kernel)
 - [`hk.ops.paged.merge_kernel`](#hkopspagedmerge_kernel)
@@ -422,6 +424,34 @@ assignment. Anything the kernel does not cover is forwarded to torch.
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
 | short sequences | torch's SDPA below n_q 192 or n_kv 32 (a silent fallback) | hk's kernel at any length |
+
+### `hk.ops.attn_bwd.attention`
+
+```python
+hk.ops.attn_bwd.attention(q, k, v, *, causal: bool = False, scale: Optional[float] = None)
+```
+
+*New after 0.9.24* (the `hk.ops.attn_bwd` module is not in the 0.9.24 wheel)
+
+Flash attention with a backward, for training: (B, S, H, D) bf16 q and (B, S, H_kv, D)
+k, v (MHA or GQA) -> o (B, S, H, D), differentiable in q, k and v.
+
+BSHD, the layout a QKV projection writes: q, k and v may be views of one fused (B, S,
+H + 2 H_kv, D) tensor (read in place); other strides (SBHD) are copied once. Causal is
+top-left with equal lengths. `scale` defaults to head_dim ** -0.5. gfx1201 (RDNA4),
+head_dim 64 or 128, S >= 192. The forward keeps a base-2 log-sum-exp a row (fp32), the
+backward runs a Delta kernel and the dQ, dK and dV kernels; dK and dV of a shared KV head are
+summed over its query heads inside the kernels.
+
+### `hk.ops.attn_bwd.why_unsupported`
+
+```python
+hk.ops.attn_bwd.why_unsupported(q, k, v) -> str
+```
+
+*New after 0.9.24* (the `hk.ops.attn_bwd` module is not in the 0.9.24 wheel)
+
+Why `attention` cannot run these operands, or ''.
 
 ### `hk.ops.paged.split_kernel`
 
