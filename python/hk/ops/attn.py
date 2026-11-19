@@ -101,8 +101,12 @@ def attn_kernel(name: str, *, head_dim: int = 128, q_block: int = 16,
                 qk_tiles: int = 2, pv_tiles: int = 2, causal: bool = False,
                 scale: Optional[float] = None, setprio: bool = True,
                 max_vgprs: int = 256, min_occupancy: int = 1, bnhd: bool = False,
-                heads_first: bool = False, warp_skip: bool = False):
+                heads_first: bool = False, warp_skip: bool = False, lse: bool = False):
     """The default tiling is the C++'s, which its sweep.sh picked.
+
+    `lse`: the kernel takes a fifth argument, an fp32 (B, H, 1, N) global, and writes each query
+    row's log-sum-exp of its scaled scores into it, in base 2 (m + log2 l over S * scale * log2 e)
+    -- what the backward (`hk.ops.attn_bwd`) rebuilds P from.
 
     `bnhd`: q, k, v and o are (B, 1, N, H * head_dim) -- the (B, N, H, D)
     memory a projection writes, which SDPA callers hand over as a transposed
@@ -154,8 +158,16 @@ def attn_kernel(name: str, *, head_dim: int = 128, q_block: int = 16,
     ty_vr = hk.RT(bf16, 16, 16, "row")         # one [d, kv] fragment of V^T
     ty_vec = hk.row_vec(ty_s)                  # one entry per query
 
+    def body_lse(q: hk.Tensor[bf16], k: hk.Tensor[bf16], v: hk.Tensor[bf16],
+                 o: hk.Tensor[bf16], lse_out: hk.Tensor[fp32]):
+        _body(q, k, v, o, lse_out)
+
     def body(q: hk.Tensor[bf16], k: hk.Tensor[bf16], v: hk.Tensor[bf16],
              o: hk.Tensor[bf16]):
+        _body(q, k, v, o, None)
+
+    @hk.func
+    def _body(q, k, v, o, lse_out):
         g = hk.group(warps)
 
         k_s = hk.lds.alloc(st_k, name="k_s")
@@ -440,6 +452,10 @@ def attn_kernel(name: str, *, head_dim: int = 128, q_block: int = 16,
             c /= l_run
             ot = hk.transpose(c)
             at(o, head, q_row, 16 * i).store(ot)
+        if lse_out is not None:
+            # Base-2 log-sum-exp of this warp's rows, before l_run is consumed by nothing else:
+            # the normalising divide above reads it and leaves it.
+            lse_out[hk.elem_coord(b, head, 0, q_row)].store(m_run + l_run.log2())
 
 
     def _grid(p):
@@ -448,7 +464,7 @@ def attn_kernel(name: str, *, head_dim: int = 128, q_block: int = 16,
             return (heads, hk.cdiv(p.q.rows, q_tile), p.q.batch)
         return (hk.cdiv(p.q.rows, q_tile), heads, p.q.batch)
 
-    return hk.kernel(body, warps=warps, grid=_grid, name=name,
+    return hk.kernel(body_lse if lse else body, warps=warps, grid=_grid, name=name,
                      max_vgprs=max_vgprs, min_occupancy=min_occupancy)
 
 
