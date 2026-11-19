@@ -42,7 +42,7 @@ def test_since_marks_against_the_pypi_wheel():
     assert "after 0.9.24" not in section          # max_occupancy= is in 0.9.24
     ops_md = (REPO / "docs" / "api" / "hk.ops.md").read_text()
     section = ops_md.split("### `hk.ops.scaled_mm`", 1)[1].split("###", 1)[0]
-    assert "after 0.9.24" not in section          # #76 is in 0.9.24
+    assert "New after 0.9.24" not in section      # #76 is in 0.9.24 (accumulate= came after)
     for page in (REPO / "docs" / "api").glob("*.md"):
         assert "after 0.9.23" not in page.read_text(), page.name   # the old baseline's marks
     # what lands after 0.9.24 is marked against the 0.9.24 wheel

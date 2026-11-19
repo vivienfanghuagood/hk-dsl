@@ -27,7 +27,7 @@ G=tests/hk/gpu
 labels=(); files=()
 group() { labels+=("$1"); shift; files+=("$(IFS='|'; echo "$*")"); }  # pytest args, |-joined
 group gemm   $G/test_gemm.py $G/test_gemm_shipped.py $G/test_autotune.py
-group attn   $G/test_attn.py $G/test_sdpa.py $G/test_attn_bwd.py
+group attn   $G/test_attn.py $G/test_sdpa.py $G/test_attn_bwd.py $G/test_fp8_cast.py
 group torch  $G/test_torch_op.py $G/test_engine.py $G/test_vllm_gemm.py $G/test_flydsl_gemm.py
 group decode $G/test_decode_gemm.py $G/test_paged.py $G/test_load_scalar.py
 group phase2 $G/test_phase2.py $G/test_target_rmsnorm.py -k norm      # the cold critical path: halved
@@ -45,7 +45,7 @@ group fence  $G/test_fenced.py
 group typeparams $G/test_kernel_typeparams_launch.py
 # 320 kernel modules in one process (issue #350): its own, so they burden no other test.
 group modceil $G/test_module_ceiling.py
-rest=$(ls $G/test_*.py | grep -v -E "test_(gemm|autotune|attn|attn_bwd|sdpa|decode_gemm|paged|load_scalar|phase2|target_rmsnorm|elementwise|bounded|strided|while|indexed|torch_op|engine|vllm_gemm|flydsl_gemm|moe_a8w4|vllm_moe_a8w4|moe_w4|fenced|kernel_typeparams_launch|module_ceiling|templates_[a-z]+|doc_[a-z_]+)\.py")
+rest=$(ls $G/test_*.py | grep -v -E "test_(gemm|autotune|attn|attn_bwd|fp8_cast|sdpa|decode_gemm|paged|load_scalar|phase2|target_rmsnorm|elementwise|bounded|strided|while|indexed|torch_op|engine|vllm_gemm|flydsl_gemm|moe_a8w4|vllm_moe_a8w4|moe_w4|fenced|kernel_typeparams_launch|module_ceiling|templates_[a-z]+|doc_[a-z_]+)\.py")
 # Every kernel a test builds is a pybind module of its own, each takes one of a process's 1024
 # pthread TSS keys, and one process ran out ("could not initialize the TSS key") once gfx950's
 # strips had preloaded twins: the rest in contiguous shares, two on one GPU and two a GPU on

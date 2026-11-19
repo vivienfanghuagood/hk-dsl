@@ -46,6 +46,12 @@ FAMILIES = [
          arches=RDNA_AND_GFX950, dtypes="bf16",
          routes=["vllm_gemm", "sglang_linear", "sgld_linear"],
          tests=["test_gemm_shipped.py", "test_gemm_cdna.py", "test_vllm_gemm.py"]),
+    dict(name="fp8_cast", what="fp8 casts for training: bf16 to fp8 rowwise and transposed with amax "
+                               "(Transformer Engine's delayed scaling), and Megatron's SwiGLU backward "
+                               "fused with it; padded row strides for the GEMMs that read them",
+         entries=["hk.ops.fp8_cast.cast_transpose", "hk.ops.fp8_cast.swiglu_bwd_cast_transpose"],
+         arches=("gfx1201",), dtypes="bf16 in, fp8 (e4m3, e5m2) out, fp32 amax", routes=[],
+         tests=["test_fp8_cast.py"]),
     dict(name="scaled_mm", what="an fp8 GEMM with per-tensor or per-token x per-channel scales (torch._scaled_mm's product)",
          entries=["hk.ops.scaled_mm"],
          arches=("gfx1201",), dtypes="fp8 (e4m3, e5m2, or a mixed pair) in, bf16 out", routes=[],

@@ -41,6 +41,8 @@ row-wise and elementwise ops are being unified by the `hk.templates` work.
 - [`hk.ops.sdpa.scaled_dot_product_attention`](#hkopssdpascaled_dot_product_attention)
 - [`hk.ops.attn_bwd.attention`](#hkopsattn_bwdattention)
 - [`hk.ops.attn_bwd.why_unsupported`](#hkopsattn_bwdwhy_unsupported)
+- [`hk.ops.fp8_cast.cast_transpose`](#hkopsfp8_castcast_transpose)
+- [`hk.ops.fp8_cast.swiglu_bwd_cast_transpose`](#hkopsfp8_castswiglu_bwd_cast_transpose)
 - [`hk.ops.paged.split_kernel`](#hkopspagedsplit_kernel)
 - [`hk.ops.paged.fused_kernel`](#hkopspagedfused_kernel)
 - [`hk.ops.paged.merge_kernel`](#hkopspagedmerge_kernel)
@@ -382,8 +384,10 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 ### `hk.ops.scaled_mm`
 
 ```python
-hk.ops.scaled_mm(a, b, scale_a, scale_b, *, bias=None, out=None)
+hk.ops.scaled_mm(a, b, scale_a, scale_b, *, bias=None, out=None, accumulate: bool = False)
 ```
+
+*Changed after 0.9.24*: new parameter `accumulate`
 
 bf16 (A @ B.T) * scale_a * scale_b (+ bias), fp8 operands, fp32
 accumulate: torch._scaled_mm's product with hk.ops.matmul's layout.
@@ -397,7 +401,10 @@ value or one a row of B ((N,) or (1, N)) -- per-tensor or per-token x
 per-channel, the two forms vLLM's fp8 linear layers use. `bias` is (N,).
 Up to FP8_DECODE_M rows, with K a multiple of 1024, it runs
 hk.ops.decode_gemm's kernel instead of the tiled one (one fp8 format
-only). A with a row stride (rows FP8_POW2_STRIDE bytes or more apart, a
+only). An fp32 `out` (M, N, contiguous) takes the product unrounded, and
+with `accumulate=True` it is added to: out += (A @ B.T) * scale_a *
+scale_b -- a weight gradient into its fp32 main_grad (Megatron's
+gradient-accumulation fusion); no bias either way. A with a row stride (rows FP8_POW2_STRIDE bytes or more apart, a
 power of two) runs FP8_POW2's schedule; a caller that can pad such rows by
 64 bytes gets the faster default one (a dense K-16384 operand: 1.47 vs
 1.27 ms at M4096 N2048).
@@ -453,6 +460,32 @@ hk.ops.attn_bwd.why_unsupported(q, k, v) -> str
 *New after 0.9.24* (the `hk.ops.attn_bwd` module is not in the 0.9.24 wheel)
 
 Why `attention` cannot run these operands, or ''.
+
+### `hk.ops.fp8_cast.cast_transpose`
+
+```python
+hk.ops.fp8_cast.cast_transpose(x, scale, amax, *, dtype='e4m3', pad: int = 64, scale_inv=None, out=None)
+```
+
+*New after 0.9.24* (the `hk.ops.fp8_cast` module is not in the 0.9.24 wheel)
+
+(rowwise (M, N) with row stride N + pad, columnwise (N, M)) of bf16 x (M, N), fp8 of x * scale;
+amax <- max(amax, max |x|) in place; scale_inv <- 1 / scale if given. M a multiple of 128,
+N of 64; `dtype` "e4m3" or "e5m2".
+
+### `hk.ops.fp8_cast.swiglu_bwd_cast_transpose`
+
+```python
+hk.ops.fp8_cast.swiglu_bwd_cast_transpose(g, y, scale, amax, *, dtype='e5m2', pad: int = 64, pad_col: int = 0, scale_inv=None, out=None, **knobs)
+```
+
+*New after 0.9.24* (the `hk.ops.fp8_cast` module is not in the 0.9.24 wheel)
+
+Megatron's swiglu_back(g, y) cast to fp8 in the same pass: g (M, F) and y (M, 2F) bf16 ->
+(rowwise (M, 2F), row stride 2F + pad; columnwise (2F, M), row stride M + pad_col); amax <-
+max(amax, max |dy|); scale_inv <- 1 / scale if given. dy is computed in fp32 and rounded to
+bf16 before the cast, as Megatron writes it. `out=(rowwise, columnwise)`: the caller's buffers
+(fp8, or uint8 views of them; any row strides) instead of new ones. M a multiple of 128, F of 32.
 
 ### `hk.ops.paged.split_kernel`
 
