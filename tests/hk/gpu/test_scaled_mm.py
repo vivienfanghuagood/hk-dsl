@@ -76,6 +76,22 @@ def test_mixed_pair(dt, dt_b, m, n, k):
     assert (y.float() - t.float()).abs().max() / t.float().abs().max() < 8e-3
 
 
+@pytest.mark.parametrize("dt,dt_b", [("e5m2", "e4m3"), ("e4m3", "e4m3")])
+def test_pow2_row_stride(dt, dt_b):
+    """A whose rows are 16 KB apart takes FP8_POW2's schedule (a view of a wider tensor here; a
+    K-16384 operand in a model). Ragged M, both scale forms."""
+    m, n, k = 333, 512, 1024
+    g = torch.Generator(device="cuda").manual_seed(4)
+    wide = (torch.randn(m, 16384, device="cuda", generator=g) * 0.5).to(FP8[dt])
+    a = wide[:, 128:128 + k]
+    b = (torch.randn(n, k, device="cuda", generator=g) * 0.5).to(FP8[dt_b])
+    from hk.ops.gemm import _pow2_rows  # noqa: PLC0415
+    assert _pow2_rows(a, m, k)
+    sa, sb = torch.rand(m, 1, device="cuda") + 0.5, torch.rand(n, device="cuda") + 0.5
+    y = scaled_mm(a, b, sa, sb)
+    _check(y, (a.float() @ b.float().T) * sa * sb)
+
+
 def test_refusals():
     a, b = _operands(128, 256, 512, "e4m3")
     one = torch.ones((), device="cuda")

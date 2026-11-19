@@ -758,6 +758,25 @@ FP8_DEFAULT = dict(DEFAULT, block_m=256)
 #:     1024x14336x4096     525.8      617.5        729.8
 FP8_SMALL_M = 128
 
+#: The fp8 schedule when A's rows are a power of two >= FP8_POW2_STRIDE bytes
+#: apart. Such rows share a memory channel on gfx1201, and FP8_DEFAULT's tile,
+#: which reads 64 B from each of 256 rows at one K offset, camps on that channel.
+#: The same kernel at M4096 N2048 runs 247 TF at K 6144 but 129 TF when A's
+#: rows are 16 KB apart, and 232 TF at K 16384 with the stride padded by
+#: 256 B. A 128-row, 128-deep tile with two LDS buffers, with each workgroup
+#: starting 4 K-tiles further on (stagger), gets most of it back without
+#: padding. e5m2 x e4m3, TF:
+#:
+#:                      FP8_DEFAULT   this   FP8_DEFAULT + stagger 8   TunableOp hipBLASLt
+#:     4096x2048x16384      122        205            155                    182
+#:     8192x2048x16384      135        194            154                    185
+#:     4096x2048x6144       236        197            222                    216
+#:
+#: It loses at short power-of-two strides (8192: 193 vs 192-221), so it is taken
+#: from 16 KB up (tools/rdna4-probes/fp8_dgrad.py).
+FP8_POW2 = dict(DEFAULT, k_step=128, lds_buffers=2, wgm=4, stagger=4)
+FP8_POW2_STRIDE = 16384
+
 
 def _scale_ab(acc, ctx):
     return acc * ctx.scale_a * ctx.scale_b
@@ -812,12 +831,23 @@ def _scale_epilogue(with_bias: bool):
 
 
 @functools.lru_cache(maxsize=None)
-def _scaled_kernel(op: str, with_bias: bool, block_m: int, op_b: Optional[str] = None):
+def _scaled_kernel(op: str, with_bias: bool, block_m: int, op_b: Optional[str] = None,
+                   pow2: bool = False):
     ep = _scale_epilogue(with_bias)
     pair = op if op_b in (None, op) else f"{op}_{op_b}"
-    return gemm_kernel(f"scaled_mm_{pair}_{'bias' if with_bias else 'nobias'}_m{block_m}",
+    sched = FP8_POW2 if pow2 else dict(FP8_DEFAULT, block_m=block_m)
+    return gemm_kernel(f"scaled_mm_{pair}_{'bias' if with_bias else 'nobias'}_"
+                       + ("pow2" if pow2 else f"m{block_m}"),
                        op_dtype=DTYPES[op], b_dtype=DTYPES[op_b or op], epilogue=ep,
-                       **dict(FP8_DEFAULT, block_m=block_m)), ep
+                       **sched), ep
+
+
+def _pow2_rows(a, m: int, k: int) -> bool:
+    """A's rows a power of two >= FP8_POW2_STRIDE bytes apart, with enough rows and K
+    for FP8_POW2's tile (fp8: one byte an element)."""
+    s = a.stride(0)
+    return (s >= FP8_POW2_STRIDE and not s & (s - 1) and m > FP8_SMALL_M
+            and not k % FP8_POW2["k_step"])
 
 
 @functools.lru_cache(maxsize=None)
@@ -888,7 +918,9 @@ def scaled_mm(a, b, scale_a, scale_b, *, bias=None, out=None):
                              f"{length}")
         return t.reshape(length)
 
-    if op_b != op:
+    if _pow2_rows(a, m, k):
+        kern, ep = _scaled_kernel(op, bias is not None, 0, op_b, pow2=True)
+    elif op_b != op:
         kern, ep = _scaled_kernel(op, bias is not None, _fp8_block_m(m), op_b)
     elif _fp8_decodes(m, n, k):
         from .decode_gemm import tokens_for  # noqa: PLC0415
