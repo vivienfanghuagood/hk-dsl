@@ -11,7 +11,8 @@ What it installs, each under its own switch (`python -m hk.integration --status`
   attention forward and backward). It replaces TE's DotProductAttention, which runs unfused on gfx1201
   (no fused attention is built there). It applies to causal or unmasked self-attention without dropout,
   bf16, head_dim 64 or 128. The model is built with that provider, so a layer it does not fit raises
-  rather than falling back: set the switch to 0 for such a model.
+  rather than falling back: set the switch to 0 for such a model. HK_MEGATRON_ATTN=sdpa puts torch's
+  SDPA (AOTriton) there instead: the best stock attention, for a baseline.
 * `megatron_fc1_bwd` (HK_MEGATRON_FC1_BWD): the MLP's fc1 backward under FP8 (delayed scaling).
   - Megatron's SwiGLU backward and the fp8 cast of its output run as one kernel
     (hk.ops.fp8_cast.swiglu_bwd_cast_transpose). It writes the e5m2 gradient with padded row strides.
@@ -47,7 +48,16 @@ def _log(msg: str) -> None:
 
 # ---------------------------------------------------------------------------------------- attention
 
-def _install_attention() -> None:
+def _sdpa(q, k, v, *, causal, scale):
+    """torch's SDPA on BSHD views (AOTriton on gfx1201): the recipe's baseline arm."""
+    import torch.nn.functional as F  # noqa: PLC0415
+
+    return F.scaled_dot_product_attention(
+        q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), is_causal=causal, scale=scale,
+        enable_gqa=q.shape[2] != k.shape[2]).transpose(1, 2)
+
+
+def _install_attention(impl: str = "") -> None:
     import torch  # noqa: PLC0415
     from megatron.core.extensions import transformer_engine_spec_provider as tsp  # noqa: PLC0415
     from megatron.core.transformer.enums import AttnMaskType  # noqa: PLC0415
@@ -80,14 +90,18 @@ def _install_attention() -> None:
             if mt not in (AttnMaskType.causal, AttnMaskType.no_mask):
                 raise ValueError(f"HK_MEGATRON_ATTN: mask type {mt} is not supported")
             # SBHD -> BSHD views; at B = 1 read in place (hk.ops.attn_bwd._bnhd)
-            o = attn_bwd.attention(query.transpose(0, 1), key.transpose(0, 1), value.transpose(0, 1),
+            o = attention(query.transpose(0, 1), key.transpose(0, 1), value.transpose(0, 1),
                                    causal=mt == AttnMaskType.causal, scale=self.scale)
             s, b = query.shape[0], query.shape[1]
             return o.transpose(0, 1).reshape(s, b, -1)
 
     torch  # noqa: B018 -- imported for the side effect of failing early without it
+    if impl not in ("", "sdpa"):
+        raise ValueError(f"HK_MEGATRON_ATTN={impl!r}: 1 (hk), sdpa (torch's, a baseline) or 0")
+    attention = _sdpa if impl == "sdpa" else attn_bwd.attention
     tsp.TESpecProvider.core_attention = lambda self: HKCoreAttention
-    _log("core attention -> hk.ops.attn_bwd.attention")
+    _log("core attention -> " + ("torch SDPA (HK_MEGATRON_ATTN=sdpa)" if impl == "sdpa"
+                                  else "hk.ops.attn_bwd.attention"))
 
 
 # ---------------------------------------------------------------------------------------- fc1 backward
@@ -257,7 +271,10 @@ def install(env=None) -> list:
     done = []
     for name, fn in _INSTALLERS:
         if switches.enabled(name, env):
-            fn()
+            if name == "megatron_attn":
+                fn(switches.value(name, env).lower())
+            else:
+                fn()
             done.append(name)
     return done
 
