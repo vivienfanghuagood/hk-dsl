@@ -68,6 +68,8 @@ and which rule decided.
 | DiT attention in `hk.ops.sdpa` (non-causal, head_dim 128, on `hk.ops.attn_k3`) | `HK_SDPA_K3` | **on, gfx1100** | per-call error 2.95e-5 against the current path's 4.50e-5 (#24) |
 | decoder attention backend | `HK_VLLM_BACKEND` | off | replaces ROCm's default decoder attention for every model, and raises rather than falls back on sliding windows, sinks, softcap, an fp8 KV cache, fp16 or other head sizes; validated on Qwen3-8B only |
 | prefill attention on vLLM's own cache | `HK_VLLM_PREFILL` | **on, gfx1100 and gfx1201** | ROCM_ATTN's prefix-prefill and TRITON_ATTN's batches with prefill in them, in place on each backend's cache, and TRITON_ATTN's decode-only steps at head size 256 (`HK_VLLM_DECODE`); cache write and block size stay vLLM's; any call it does not take falls back. In-situ against vLLM's kernels on every call (`HK_VLLM_PREFILL_SHADOW=1`, MiniCPM5-2B, about 22,000 calls on each backend): at most 2 bf16 ulps of a row's max |
+| Megatron-LM core attention on `hk.ops.attn_bwd.attention` (forward and backward), under `python -m hk.integration.megatron`; `=sdpa` puts torch's SDPA there instead (a baseline) | `HK_MEGATRON_ATTN` | off: opt-in | the recipe's A/B is not published yet ([Megatron-LM](megatron.md)) |
+| Megatron-LM fc1 backward under FP8: SwiGLU backward + fp8 cast in one kernel, padded gradient, fc1's GEMMs on `hk.ops.gemm.scaled_mm` | `HK_MEGATRON_FC1_BWD` | off: opt-in | a 3-seed loss check on real text is open ([Megatron-LM](megatron.md)) |
 | SGLang-Diffusion MiniMax H3 VAE convs on one frame (an image edit's encoder) as a conv2d with the last time tap | `HK_SGLD_H3VAE` | off: opt-in | exact up to summation order; 1.99-7.35x MIOpen's conv3d a conv at the encoder's 14 shapes (W7900D); on by default after an end-to-end edit smoke |
 | SGLang-Diffusion Qwen3-VL vision patch embedding (kernel == stride) as one F.linear | `HK_SGLD_PATCHEMBED` | off: opt-in | exact up to summation order; 4096 patches: MIOpen's conv3d 538 ms -> 0.28 ms (W7900D); on by default after an end-to-end edit smoke |
 | ConvRot INT8 (`--quantization convrot_int8`) | `HK_SGLD_CONVROT`, or `HK_SGLD=...,convrot` | **off: opt-in** | lossy by design (PSNR 30.4 dB from bf16, visible drift): a model-level choice, not a toolchain default |
@@ -666,6 +668,8 @@ not restate it:
 | `HK_FLYDSL` | `flydsl_gemm.py` | `0`/`off`/`no`/`false`: never take a table's FlyDSL rows, even with FlyDSL installed |
 | `FLYDSL_ROOT` | `flydsl_gemm.py` | a FlyDSL checkout whose `kernels/` package matches the installed `flydsl`, appended to `sys.path`; where another `kernels` is installed, imported from beside it |
 | `HK_PATCH_SGLANG` | `switches.py` | `0`: every SGLang route off |
+| `HK_PATCH_MEGATRON` | `switches.py` | `0`: every Megatron-LM route off |
+| `HK_MEGATRON_LMHEAD_WGRAD` | `megatron.py` | `1`: Megatron's output layer accumulates its weight gradient through TE's GEMM, not apex's (configuration; [Megatron-LM](megatron.md)) |
 | `HK_SGLANG_LINEAR` | `_sglang_plugin.py` | route SGLang's unquantized linear layers (a route) |
 | `HK_SGLANG_ROUTES` | `sglang.py`, via `engine.shipped_table` | a routing table for SGLang's linear layers instead of the shipped one |
 | `HK_SGLANG_MOE` | `_sglang_plugin.py` | `1` (a route): the torch top-k and hk's expert GEMMs; `topk`: the torch top-k alone |

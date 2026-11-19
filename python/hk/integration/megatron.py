@@ -43,8 +43,7 @@ PAD = 64          # bytes of row padding on fc1's fp8 gradient (hk.ops.gemm.FP8_
 
 
 def _log(msg: str) -> None:
-    if not os.environ.get("HK_QUIET"):
-        print(f"[hk] megatron: {msg}", flush=True)
+    print(f"[hk] megatron: {msg}", flush=True)
 
 
 # ---------------------------------------------------------------------------------------- attention
