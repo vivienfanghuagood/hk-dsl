@@ -41,10 +41,11 @@ LOG2E = math.log2(math.e)
 def dq_kernel(name: str, *, head_dim: int = 128, q_block: int = 16, kv_block: int = 32,
               warps: int = 12, causal: bool = False, scale: Optional[float] = None,
               bnhd: bool = False, setprio: bool = True, max_vgprs: int = 256,
-              min_occupancy: int = 1):
+              min_occupancy: int = 1, ablate: frozenset = frozenset()):
     """dQ for one (head_dim, causal, scale). Arguments: q, k, v, do (bf16, the forward's
     layout), lse and delta (fp32 (B, H, 1, N): base-2 LSE of the scaled scores, rowsum(dO . O)),
-    dq (bf16, q's layout)."""
+    dq (bf16, q's layout). `ablate`: as dkv_kernel's ("stage", "transpose" (K^T), "s_mma",
+    "dp_mma", "acc_mma", "softmax", "ds"); timing only."""
     d = _derive(head_dim, q_block, kv_block, warps, 16, 2, 2)
     q_tile, d_frags, kv_frags = d["q_tile"], d["d_frags"], d["kv_frags"]
     d_chunks, v_bands, vt_frags = d["d_chunks"], d["v_bands"], d["vt_frags"]
@@ -104,7 +105,7 @@ def dq_kernel(name: str, *, head_dim: int = 128, q_block: int = 16, kv_block: in
         dq_c = [hk.zeros(ty_dq) for _ in range(d_frags)]
         k_rows = [hk.zeros(ty_slab) for _ in range(v_bands)]
         c_chunk = wid
-        stages_kt = c_chunk < d_chunks
+        stages_kt = c_chunk < d_chunks if "transpose" not in ablate else False
 
         kv_blocks = hk.cdiv(n_kv, kv_block)
         if causal:
@@ -115,6 +116,12 @@ def dq_kernel(name: str, *, head_dim: int = 128, q_block: int = 16, kv_block: in
             return hk.min(kb * kv_block, n_kv - kv_block)
 
         def load_kv(kv_start):
+            if "stage" in ablate:
+                if stages_kt:
+                    for w in range(v_bands):
+                        at(k, head_kv, kv_start + 16 * w, c_chunk * 16).load(ty_slab,
+                                                                             into=k_rows[w])
+                return
             g.stage(buf_k, at(k, head_kv, kv_start, 0))
             g.stage(buf_v, at(v, head_kv, kv_start, 0))
             if stages_kt:
@@ -123,8 +130,9 @@ def dq_kernel(name: str, *, head_dim: int = 128, q_block: int = 16, kv_block: in
 
         def commit_kv():
             hk.arch.vm_wait(0)
-            g.commit(k_s, buf_k)
-            g.commit(v_s, buf_v)
+            if "stage" not in ablate:
+                g.commit(k_s, buf_k)
+                g.commit(v_s, buf_v)
             if stages_kt:
                 for w in range(v_bands):
                     k_t = hk.transpose_sep(k_rows[w])
@@ -135,7 +143,7 @@ def dq_kernel(name: str, *, head_dim: int = 128, q_block: int = 16, kv_block: in
             with hk.scope():
                 s_f = [hk.zeros(ty_s) for _ in range(kv_frags)]
                 # ---- S^T = K . Q^T ----------------------------------------------------
-                for kk in range(d_frags):
+                for kk in range(d_frags if "s_mma" not in ablate else 0):
                     for n0 in range(0, kv_frags, 2):
                         k_win = [gr_k.load_frag(n0 + i, kk, ty_k) for i in range(2)]
                         hk.lds.wait_for(*k_win)
@@ -145,22 +153,22 @@ def dq_kernel(name: str, *, head_dim: int = 128, q_block: int = 16, kv_block: in
                             s_f[n0 + i] += k_win[i] @ q_r[kk].T
                         if setprio:
                             hk.arch.setprio(0)
-                for n in range(kv_frags):
+                for n in range(kv_frags if "softmax" not in ablate else 0):
                     s_f[n] *= scale_l2e
                 if causal:
                     dd = q_row - kv_start
-                    for n in range(kv_frags):
+                    for n in range(kv_frags if "softmax" not in ablate else 0):
                         s_f[n].triu_(dd - 16 * n, NEG_INF)
                 if skip > 0:
-                    for n in range(kv_frags):
+                    for n in range(kv_frags if "softmax" not in ablate else 0):
                         s_f[n].upper_fill_(skip - 16 * n, NEG_INF)
                 # ---- P^T = exp2(S^T - LSE) -------------------------------------------
-                for n in range(kv_frags):
+                for n in range(kv_frags if "softmax" not in ablate else 0):
                     s_f[n] -= lse_v
                     s_f[n].exp2_()
                 # ---- dP^T = V . dO^T --------------------------------------------------
                 dp_f = [hk.zeros(ty_s) for _ in range(kv_frags)]
-                for kk in range(d_frags):
+                for kk in range(d_frags if "dp_mma" not in ablate else 0):
                     for n0 in range(0, kv_frags, 2):
                         v_win = [gr_v.load_frag(n0 + i, kk, ty_k) for i in range(2)]
                         hk.lds.wait_for(*v_win)
@@ -172,10 +180,11 @@ def dq_kernel(name: str, *, head_dim: int = 128, q_block: int = 16, kv_block: in
                             hk.arch.setprio(0)
                 # ---- dS^T = P^T . (dP^T - Delta); dQ^T += K^T . dS^T ------------------
                 for n in range(kv_frags):
-                    dp_f[n] -= dl_v
-                    dp_f[n] *= s_f[n]
+                    if "ds" not in ablate:
+                        dp_f[n] -= dl_v
+                        dp_f[n] *= s_f[n]
                     ds_cvt = dp_f[n].to(bf16)
-                    for g0 in range(0, d_frags, 2):
+                    for g0 in range(0, d_frags if "acc_mma" not in ablate else 0, 2):
                         kt_win = [gr_kt.load_frag(g0 + i, n, ty_kt) for i in range(2)]
                         hk.lds.wait_for(*kt_win)
                         if setprio:
@@ -213,7 +222,7 @@ def dq_kernel(name: str, *, head_dim: int = 128, q_block: int = 16, kv_block: in
 def dkv_kernel(name: str, *, mode: str, head_dim: int = 128, kv_rows: int = 16, q_block: int = 32,
                warps: int = 12, causal: bool = False, scale: Optional[float] = None,
                bnhd: bool = False, setprio: bool = True, max_vgprs: int = 256,
-               min_occupancy: int = 1):
+               min_occupancy: int = 1, ablate: frozenset = frozenset()):
     """dK (mode="dk") or dV (mode="dv"): `dq_kernel` with the roles of Q and KV swapped. A warp
     owns 16 KV rows -- K (and for dK, V) in registers -- and the workgroup walks the Q blocks,
     staging Q and dO through LDS, prefetched one block ahead exactly as the forward and dQ stage
@@ -226,7 +235,12 @@ def dkv_kernel(name: str, *, mode: str, head_dim: int = 128, kv_rows: int = 16, 
     dV^T += dO^T P and dK^T += Q^T dS, with dO^T / Q^T staged transposed in LDS.
 
     Arguments: q, k, v, do (bf16), lse and delta (fp32 (B, H, 1, N)), out (dk or dv, bf16, k's
-    layout). GQA sums over the query heads of a KV head inside the kernel."""
+    layout). GQA sums over the query heads of a KV head inside the kernel.
+
+    `ablate` (timing only; the results are wrong): stages to delete -- "stage" (Q/dO global
+    loads and their LDS commit), "transpose" (the transposed tile's loads and register
+    transposes), "s_mma", "dp_mma", "acc_mma" (the three products), "softmax" (scale, mask,
+    LSE and exp2), "ds" (Delta and the dS product)."""
     if mode not in ("dk", "dv"):
         raise ValueError(f"mode is 'dk' or 'dv', not {mode!r}")
     if kv_rows != 16:
@@ -286,7 +300,7 @@ def dkv_kernel(name: str, *, mode: str, head_dim: int = 128, kv_rows: int = 16, 
         acc = [hk.zeros(ty_acc) for _ in range(d_frags)]
         t_rows = [hk.zeros(ty_op) for _ in range(q_bands)]
         c_chunk = wid
-        stages_t = c_chunk < d_chunks
+        stages_t = c_chunk < d_chunks if "transpose" not in ablate else False
         src_t = q if dk_mode else dout        # what is staged transposed
 
         q_blocks = hk.cdiv(n_q, q_block)
@@ -299,6 +313,11 @@ def dkv_kernel(name: str, *, mode: str, head_dim: int = 128, kv_rows: int = 16, 
             return hk.min(qi * q_block, n_q - q_block)
 
         def load_q(h, q_start):
+            if "stage" in ablate:
+                if stages_t:
+                    for w in range(q_bands):
+                        at(src_t, h, q_start + 16 * w, c_chunk * 16).load(ty_op, into=t_rows[w])
+                return
             g.stage(buf_q, at(q, h, q_start, 0))
             if dk_mode:
                 g.stage(buf_o, at(dout, h, q_start, 0))
@@ -308,9 +327,10 @@ def dkv_kernel(name: str, *, mode: str, head_dim: int = 128, kv_rows: int = 16, 
 
         def commit_q():
             hk.arch.vm_wait(0)
-            g.commit(q_s, buf_q)
-            if dk_mode:
-                g.commit(o_s, buf_o)
+            if "stage" not in ablate:
+                g.commit(q_s, buf_q)
+                if dk_mode:
+                    g.commit(o_s, buf_o)
             if stages_t:
                 for w in range(q_bands):
                     tt = hk.transpose_sep(t_rows[w])
@@ -321,9 +341,14 @@ def dkv_kernel(name: str, *, mode: str, head_dim: int = 128, kv_rows: int = 16, 
             with hk.scope():
                 # ---- S = Q . K^T, P = exp2(S - LSE) ------------------------------------
                 s_f = [hk.zeros(ty_s) for _ in range(q_frags)]
-                for kk in range(d_frags):
+                q_keep = None
+                for kk in range(d_frags if "s_mma" not in ablate else 0):
                     for n0 in range(0, q_frags, 2):
-                        q_win = [gr_q.load_frag(n0 + i, kk, ty_op) for i in range(2)]
+                        if "lds" in ablate and q_keep is not None:
+                            q_win = q_keep
+                        else:
+                            q_win = [gr_q.load_frag(n0 + i, kk, ty_op) for i in range(2)]
+                            q_keep = q_win
                         hk.lds.wait_for(*q_win)
                         if setprio:
                             hk.arch.setprio(1)
@@ -331,23 +356,28 @@ def dkv_kernel(name: str, *, mode: str, head_dim: int = 128, kv_rows: int = 16, 
                             s_f[n0 + i] += q_win[i] @ k_r[kk].T
                         if setprio:
                             hk.arch.setprio(0)
-                for n in range(q_frags):
+                for n in range(q_frags if "softmax" not in ablate else 0):
                     s_f[n] *= scale_l2e
                     if causal:
                         # rows q = q_start + 16n + r, columns kv = kv_row + c: fill kv > q
                         s_f[n].tril_(kv_row - q_start - 16 * n, NEG_INF)
                 if skip > 0:
-                    for n in range(q_frags):
+                    for n in range(q_frags if "softmax" not in ablate else 0):
                         s_f[n].upper_fill_(skip - 16 * n, NEG_INF)
-                for n in range(q_frags):
+                for n in range(q_frags if "softmax" not in ablate else 0):
                     s_f[n] -= lse[hk.elem_coord(b, h, 0, q_start + 16 * n)].load(ty_cv)
                     s_f[n].exp2_()
                 if dk_mode:
                     # ---- dP = dO . V^T; dS = P . (dP - Delta) ----------------------------
                     dp_f = [hk.zeros(ty_s) for _ in range(q_frags)]
-                    for kk in range(d_frags):
+                    o_keep = None
+                    for kk in range(d_frags if "dp_mma" not in ablate else 0):
                         for n0 in range(0, q_frags, 2):
-                            o_win = [gr_o.load_frag(n0 + i, kk, ty_op) for i in range(2)]
+                            if "lds" in ablate and o_keep is not None:
+                                o_win = o_keep
+                            else:
+                                o_win = [gr_o.load_frag(n0 + i, kk, ty_op) for i in range(2)]
+                                o_keep = o_win
                             hk.lds.wait_for(*o_win)
                             if setprio:
                                 hk.arch.setprio(1)
@@ -355,17 +385,22 @@ def dkv_kernel(name: str, *, mode: str, head_dim: int = 128, kv_rows: int = 16, 
                                 dp_f[n0 + i] += o_win[i] @ v_r[kk].T
                             if setprio:
                                 hk.arch.setprio(0)
-                    for n in range(q_frags):
+                    for n in range(q_frags if "ds" not in ablate else 0):
                         dp_f[n] -= delta[hk.elem_coord(b, h, 0, q_start + 16 * n)].load(ty_cv)
                         dp_f[n] *= s_f[n]
                     b_f = dp_f
                 else:
                     b_f = s_f
                 # ---- dK^T += Q^T . dS  |  dV^T += dO^T . P ----------------------------------
-                for n in range(q_frags):
+                t_keep = None
+                for n in range(q_frags if "acc_mma" not in ablate else 0):
                     b16 = b_f[n].to(bf16)
                     for g0 in range(0, d_frags, 2):
-                        t_win = [gr_t.load_frag(g0 + i, n, ty_op) for i in range(2)]
+                        if "lds" in ablate and t_keep is not None:
+                            t_win = t_keep
+                        else:
+                            t_win = [gr_t.load_frag(g0 + i, n, ty_op) for i in range(2)]
+                            t_keep = t_win
                         hk.lds.wait_for(*t_win)
                         if setprio:
                             hk.arch.setprio(1)
