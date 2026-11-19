@@ -881,7 +881,11 @@ def scaled_mm(a, b, scale_a, scale_b, *, bias=None, out=None):
     value or one a row of B ((N,) or (1, N)) -- per-tensor or per-token x
     per-channel, the two forms vLLM's fp8 linear layers use. `bias` is (N,).
     Up to FP8_DECODE_M rows, with K a multiple of 1024, it runs
-    hk.ops.decode_gemm's kernel instead of the tiled one.
+    hk.ops.decode_gemm's kernel instead of the tiled one (one fp8 format
+    only). A with a row stride (rows FP8_POW2_STRIDE bytes or more apart, a
+    power of two) runs FP8_POW2's schedule; a caller that can pad such rows by
+    64 bytes gets the faster default one (a dense K-16384 operand: 1.47 vs
+    1.27 ms at M4096 N2048).
     gfx1201 only: gfx1100 has no fp8 WMMA, and gfx950's fp8 GEMMs are
     hk.ops.gemm_cdna's.
     """

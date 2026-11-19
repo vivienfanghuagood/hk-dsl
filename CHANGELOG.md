@@ -6,6 +6,12 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+- `hk.ops.scaled_mm` (gfx1201) takes a mixed fp8 pair, e5m2 x e4m3 or e4m3 x e5m2: a training backward's gradient
+  against a weight. When A's rows are a power of two of at least 16 KB apart (a K-16384 operand), it runs a
+  128x128x128 schedule. Rows that far apart share a memory channel on gfx1201, and the default tile drops to about half
+  speed there. The M4096 N2048 K16384 dgrad goes from 2.0 to 1.47 ms, against 1.51 ms for TunableOp-tuned hipBLASLt. A
+  caller that pads A's rows by 64 bytes gets 1.27 ms on the default schedule (`tools/rdna4-probes/fp8_dgrad.py`).
+
 ## 0.9.24
 
 hk-dsl 0.9.24: a patch release. SGLang-Diffusion's `sgld_linear` no longer deadlocks a server with more than
