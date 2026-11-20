@@ -82,6 +82,36 @@ VGPRs per lane (no kernel spills; hk rejects a spilling build):
   is flat, the shipped 12 warps x 32 within ~5% of the best everywhere; 64-row blocks spill at d128.
 - **Delta in torch**: 0.36 ms at P1, against 0.03 ms for the kernel.
 
+## Attribution, and why the backward is not pushed further (for now)
+
+Each stage deleted in turn (`ablate=` on `dq_kernel` / `dkv_kernel`; timing only, the results are wrong). Same shape as
+P1 (B2 S2048 16x128 causal), in-place BSHD, one process, interleaved, R9700. The table gives the share of each kernel's
+time that disappears. A deletion also removes whatever fed only that stage, so the matmul rows overlap with the others.
+
+| stage deleted | dQ (681 us, 76 TF) | dK (660 us, 78 TF) | dV (450 us, 76 TF) |
+|---|---|---|---|
+| global staging of K/V (dQ) or Q/dO (dK, dV) | 7% | 5% | 4% |
+| the in-kernel register transposes (K^T, Q^T, dO^T) | 13% | 13% | 18% |
+| softmax: scale, mask, LSE, exp2 | 7% | 8% | 11% |
+| re-reading operand fragments from LDS | -- | 5% | 5% |
+| each one of the three (dV: two) matmul groups | ~25% | ~25% | ~33% |
+
+- **What is left:** with staging, transposes, softmax and LDS re-reads all deleted, only the WMMAs and their format
+  conversions remain. They run at 116 TF (dK, 443 us) and 120 TF (dV, 286 us), about 61% of the measured 197 TF bf16
+  peak. That is the ceiling of this design. It is not LDS-bound.
+- **Where the gap is:** the kernels run at 76-78 TF today, and the rest of the gap is the 8 matmuls a backward of this
+  shape does where the standard count is 5.
+- **What is left to win, per fwd+bwd call:**
+  - Moving the transposes out of the kernels: the forward writes K^T and Q^T, the Delta kernel writes dO^T, and the
+    backward stages them like any other tile. About 0.28 ms saved against about 0.08 ms of extra writes, net 0.2 ms.
+  - A dK/dV fusion that fits the registers, perhaps with head_dim split across warps: about 0.3 ms. Unproven, and the
+    fused kernel tried earlier ran at 29 TF.
+  - In a 1.28B Megatron FP8 step (64 calls, about 1.3 s) that is roughly 1-2.5%. It was measured and set aside
+    (2026-11-19).
+- **Ruled out:** dQ by atomics inside the dK kernel. A warp here owns 16 KV rows, so it would add about 2 GB of fp32
+  atomics per call, about 4x the operand traffic. A workgroup-level reduction would need about 192 KB of LDS, and the
+  dK kernel has no VGPRs left for K^T.
+
 ## What this is not
 
 - gfx1201 only. On gfx1100 the dQ kernel at d128 spills under the VOPD-free build gfx11 needs; it is
