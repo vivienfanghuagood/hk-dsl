@@ -50,6 +50,8 @@ def _hits(rule: str, text: str) -> list[str]:
      "$HOME/data/x, ${D}/data/x, ~/data/x, ./data/x, /workdir/x, /window", []),
 ])
 
+def test_rules(rule, text, want):
+    assert _hits(rule, text) == want
 
 def test_text_mode(tmp_path, capsys):
     body = tmp_path / "body.md"
@@ -58,8 +60,6 @@ def test_text_mode(tmp_path, capsys):
     assert "[root-scratch-path] /w/snap-0101" in capsys.readouterr().out
     body.write_text("```bash\nexport PATH=/opt/rocm/bin:/usr/bin\n```\n")
     assert MOD.main(["--text", str(body)]) == 0
-def test_rules(rule, text, want):
-    assert _hits(rule, text) == want
 
 
 def test_patterns_file(tmp_path):
