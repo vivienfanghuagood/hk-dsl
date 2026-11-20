@@ -261,8 +261,9 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "Megatron-LM's core attention on hk.ops.attn_bwd.attention (flash attention forward and "
        "backward) in place of TE's unfused DotProductAttention: causal or unmasked self-attention, "
        "no dropout, head_dim 64 or 128 (python -m hk.integration.megatron)",
-       "opt-in until the recipe's A/B is published (docs/megatron.md); the kernels are "
-       "hk.ops.attn_bwd's (tests/hk/gpu/test_attn_bwd.py)"),
+       "opt-in (a new integration). With the recipe's other switches, a 1.28B Megatron run on one "
+       "R9700 trains 1.43x faster than BF16 + SDPA, loss within seed noise (docs/megatron.md); the "
+       "kernels are hk.ops.attn_bwd's (tests/hk/gpu/test_attn_bwd.py)"),
     _R("megatron_fc1_bwd", "megatron", "HK_MEGATRON_FC1_BWD", False, (),
        "the MLP's fc1 backward under FP8 delayed scaling: SwiGLU backward + fp8 cast as one kernel "
        "(hk.ops.fp8_cast), padded e5m2 gradient, fc1's dgrad and wgrad on hk.ops.gemm.scaled_mm",

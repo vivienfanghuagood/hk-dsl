@@ -50,15 +50,53 @@ it. A placebo arm (no change but the GEMM algorithms) shows how far any rounding
 All three are inside the placebo's range. The attention backward was checked per kernel against float64 and SDPA
 (`tests/hk/gpu/test_attn_bwd.py`), and in training against SDPA.
 
+**Convergence.** Both arms trained 1000 iterations (16.4M tokens) on 2 seeds. Validation used a fixed 2% of the
+FineWeb-Edu documents, every 100 iterations.
+
+![Loss against iteration and against wall-clock, BF16 + SDPA and FP8 + hk, 1000 iterations on one R9700](assets/megatron-rdna4-convergence.svg)
+
+| arm | seed | train loss (last 50 iterations) | validation loss @1000 | ms / iteration | tokens/s | minutes |
+|---|---|---:|---:|---:|---:|---:|
+| BF16 + SDPA | 1234 | 5.2422 | 5.1537 | 1636.5 | 10012 | 27.5 |
+| BF16 + SDPA | 1 | 5.2553 | 5.1675 | 1640.7 | 9986 | 27.4 |
+| FP8 + hk | 1234 | 5.2399 | 5.1555 | 1146.7 | 14288 | 19.3 |
+| FP8 + hk | 1 | 5.2653 | 5.1851 | 1146.3 | 14293 | 19.3 |
+
+- **Validation loss, recipe minus baseline, same seed:** +0.002 and +0.018. Within an arm, the two seeds differ by
+  0.014 (baseline) and 0.030 (recipe), so this run shows no difference beyond seed noise.
+- **Training:** both arms reach each training loss at the same iteration (+-30), and the recipe gets there 1.41-1.42x
+  sooner in wall-clock. No NaN, skipped iteration or loss spike in either arm.
+
 ## Requirements
 
 - A gfx1201 GPU, ROCm 7.2.x and PyTorch 2.10 for ROCm. The numbers above come from
   `rocm/pytorch:rocm7.2.4_ubuntu24.04_py3.12_pytorch_release_2.10.0`.
 - **Transformer Engine for ROCm, built with gfx1201 enabled.** Stock ROCm Transformer Engine does not enable gfx1201
-  yet. The numbers above used a local build (2.21.0.dev0) with gfx1201 enabled; the build steps will be published
-  here once that is settled.
-- Megatron-LM, ROCm fork, commit 5933b58. No source changes.
+  yet. Branch `rdna4-fp8` of [AMD-AIM/TransformerEngine](https://github.com/AMD-AIM/TransformerEngine) does: it is
+  ROCm TE c692b13 plus two patches. One enables FP8/BF16 on gfx120x; the other builds the PyTorch extension against
+  torch 2.10. See "Build Transformer Engine" below.
+- Megatron-LM, ROCm fork, commit 5933b58. No source changes. Branch `te-ce-version-gate` of
+  [AMD-AIM/Megatron-LM](https://github.com/AMD-AIM/Megatron-LM) (5933b58 plus upstream's TE-version check for the
+  fused cross-entropy) lets you pass `--cross-entropy-fusion-impl te` directly instead of `HK_MEGATRON_TE_CE=1`.
 - hk-dsl with `hk.integration.megatron`.
+
+## Build Transformer Engine
+
+Inside the image above, about 40 minutes with 48 jobs:
+
+```bash
+git clone --recursive -b rdna4-fp8 https://github.com/AMD-AIM/TransformerEngine
+cd TransformerEngine
+python -m venv --system-site-packages te-venv && . te-venv/bin/activate   # if the image's environment is read-only
+pip install cmake ninja pybind11 "setuptools<80" wheel pydantic importlib-metadata einops onnx onnxscript
+NVTE_ROCM_ARCH=gfx1201 NVTE_FUSED_ATTN=0 NVTE_FUSED_ATTN_CK=0 NVTE_FUSED_ATTN_AOTRITON=0 \
+NVTE_FRAMEWORK=pytorch NVTE_USE_ROCM=1 MAX_JOBS=48 \
+    pip wheel --no-build-isolation --no-deps -w dist .
+pip install --no-deps dist/transformer_engine-*.whl
+```
+
+TE's fused attention is left out (`NVTE_FUSED_ATTN=0`): it has no gfx120x kernels, and hk's or SDPA's attention takes
+its place.
 
 ## Run
 
@@ -110,9 +148,9 @@ Micro-batch 2 with no activation recompute fits because hk's attention stores li
   - Only hk's GEMM reads that buffer; every other GEMM stays on TE, and a padded tensor headed for TE raises.
 - **Cross-entropy.** `HK_MEGATRON_TE_CE=1` puts TE's fused kernel in the slot `native` names, because the ROCm fork
   refuses `--cross-entropy-fusion-impl te` outright. It needs TE 2.19 or later.
-  - Once the fork gates that check on the TE version, as upstream Megatron-LM does
-    ([ROCm/Megatron-LM#169](https://github.com/ROCm/Megatron-LM/pull/169)), pass `--cross-entropy-fusion-impl te`
-    and drop the switch.
+  - With a Megatron that gates that check on the TE version, as upstream Megatron-LM does, pass
+    `--cross-entropy-fusion-impl te` and drop the switch. That means AMD-AIM/Megatron-LM's `te-ce-version-gate`
+    branch, or ROCm/Megatron-LM once [#169](https://github.com/ROCm/Megatron-LM/pull/169) lands.
 - **Not covered:**
   - one GPU only: tensor and pipeline parallelism were not run;
   - MXFP8 and current scaling;
