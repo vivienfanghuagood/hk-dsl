@@ -150,7 +150,9 @@ Micro-batch 2 with no activation recompute fits because hk's attention stores li
   refuses `--cross-entropy-fusion-impl te` outright. It needs TE 2.19 or later.
   - With a Megatron that gates that check on the TE version, as upstream Megatron-LM does, pass
     `--cross-entropy-fusion-impl te` and drop the switch. That means AMD-AIM/Megatron-LM's `te-ce-version-gate`
-    branch, or ROCm/Megatron-LM once [#169](https://github.com/ROCm/Megatron-LM/pull/169) lands.
+    branch, or ROCm/Megatron-LM's rocm_dev from the merge of
+    [#169](https://github.com/ROCm/Megatron-LM/pull/169) on (2026-11-20, d3886b1). The switch stays until a released
+    ROCm Megatron-LM contains the fix.
 - **Not covered:**
   - one GPU only: tensor and pipeline parallelism were not run;
   - MXFP8 and current scaling;
@@ -176,5 +178,6 @@ Micro-batch 2 with no activation recompute fits because hk's attention stores li
   - How the recipe selects it: `HK_MEGATRON_TE_CE=1` puts TE's kernel in the slot `native` names. It refuses a TE
     older than 2.19.
   - When the fork gates the check on the TE version, as upstream Megatron-LM does (#7339), pass
-    `--cross-entropy-fusion-impl te` and drop the switch. The fork PR is [ROCm/Megatron-LM#169](https://github.com/ROCm/Megatron-LM/pull/169).
+    `--cross-entropy-fusion-impl te` and drop the switch. The fix is merged into ROCm/Megatron-LM rocm_dev
+    ([#169](https://github.com/ROCm/Megatron-LM/pull/169)).
 - **Attention backward beyond today's.** Measured ceiling and the levers left: `tools/attn-bwd-gfx1201/README.md`.
