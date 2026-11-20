@@ -11,7 +11,7 @@ launcher installs hk's pieces and then runs `pretrain_gpt.py`.
 | attention, forward and backward | `hk.ops.attn_bwd.attention` in place of TE's unfused attention (gfx1201 has no fused one) | `HK_MEGATRON_ATTN` |
 | the MLP's fc1 backward (FP8) | SwiGLU backward and the fp8 cast as one kernel, then fc1's dgrad and wgrad on hk's fp8 GEMM | `HK_MEGATRON_FC1_BWD` |
 | the output layer's weight gradient | TE's GEMM instead of apex's (configuration) | `HK_MEGATRON_LMHEAD_WGRAD` |
-| cross-entropy | TE's fused kernel: `--cross-entropy-loss-fusion --cross-entropy-fusion-impl te` (configuration) | Megatron flag |
+| cross-entropy | TE's fused kernel (configuration): `--cross-entropy-loss-fusion` with `HK_MEGATRON_TE_CE=1` | `HK_MEGATRON_TE_CE` |
 
 ## Result
 
@@ -32,11 +32,11 @@ cross-entropy) against FP8 + hk, ms per iteration and tokens/s, plus loss agreem
 ```bash
 cd Megatron-LM
 python3 -m hk.integration --status          # the megatron_* routes this GPU will get
-HK_MEGATRON_ATTN=1 HK_MEGATRON_FC1_BWD=1 HK_MEGATRON_LMHEAD_WGRAD=1 \
+HK_MEGATRON_ATTN=1 HK_MEGATRON_FC1_BWD=1 HK_MEGATRON_LMHEAD_WGRAD=1 HK_MEGATRON_TE_CE=1 \
 torchrun --nproc-per-node 1 -m hk.integration.megatron pretrain_gpt.py \
     TBD: model and training flags \
     --fp8-format hybrid --fp8-recipe delayed \
-    --cross-entropy-loss-fusion --cross-entropy-fusion-impl te \
+    --cross-entropy-loss-fusion --cross-entropy-fusion-impl native \
     --disable-bias-linear --swiglu --attention-dropout 0 ...
 ```
 
@@ -79,7 +79,11 @@ how to save and reload the results, and how to check that they loaded. The basel
   TE's fused kernel is already close to the bandwidth floor (about 2 ms), and hk would save about 3 ms an
   iteration, so the recipe uses TE's. Megatron-LM rejects TE's fused cross-entropy as unstable ("stability
   issues"). That covers TE before 2.19, which kept the gradient in bf16 and zeroed a near-certain target's
-  (TransformerEngine #3193); 2.21 passes the same test. TBD: how the recipe selects it.
+  (TransformerEngine #3193); 2.21 passes the same test.
+  - How the recipe selects it: `HK_MEGATRON_TE_CE=1` puts TE's kernel in the slot `native` names. It refuses a TE
+    older than 2.19.
+  - When the fork gates the check on the TE version, as upstream Megatron-LM does (#7339), pass
+    `--cross-entropy-fusion-impl te` and drop the switch. TBD: link to the fork PR.
 - **Attention backward beyond today's.** Measured ceiling and the levers left: `tools/attn-bwd-gfx1201/README.md`.
 
 ## Reproduce the A/B

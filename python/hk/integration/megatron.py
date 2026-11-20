@@ -26,7 +26,13 @@ two). All are off until asked for: the recipe sets them.
   layer accumulates its weight gradient through apex's fused_weight_gradient_mlp_cuda, which picks a slow
   tile on gfx1201. This routes it through TE's general_gemm (hipBLASLt, tunable with TE's algorithm cache).
 
-docs/recipes/megatron-rdna4.md is the whole recipe: the Transformer Engine build, Megatron's flags,
+* HK_MEGATRON_TE_CE=1: configuration, no hk kernel. With --cross-entropy-loss-fusion
+  --cross-entropy-fusion-impl native, Megatron's fused cross-entropy is Transformer Engine's (2.19 or
+  later). The ROCm fork refuses --cross-entropy-fusion-impl te outright, for a TE bug fixed in 2.19.
+  Once the fork gates that on the TE version, as upstream does (NVIDIA/Megatron-LM#7339), pass te and
+  drop the switch.
+
+docs/megatron.md is the whole recipe: the Transformer Engine build, Megatron's flags,
 GEMM tuning, and the measured speedup.
 """
 
@@ -262,14 +268,48 @@ def _install_lmhead_wgrad() -> None:
     _log("output layer weight-gradient accumulation -> TE general_gemm")
 
 
+# ---------------------------------------------------------------------------------------- cross-entropy
+
+def _install_te_ce(argv) -> None:
+    """Megatron's fused cross-entropy slot ('native') -> Transformer Engine's parallel_cross_entropy,
+    called as Megatron's own 'te' branch calls it. The ROCm fork rejects --cross-entropy-fusion-impl
+    te outright (a pre-2.19 TE bug, fixed in TE 2.19); this reaches TE's kernel through the slot the
+    fork allows, and only on a TE that has the fix."""
+    import torch  # noqa: PLC0415
+    import megatron.core.models.common.language_module.language_module as lm  # noqa: PLC0415
+    from megatron.core.extensions.transformer_engine import te_parallel_cross_entropy  # noqa: PLC0415
+    from megatron.core.utils import is_te_min_version  # noqa: PLC0415
+
+    if not is_te_min_version("2.19.0"):
+        raise RuntimeError("HK_MEGATRON_TE_CE=1 needs Transformer Engine 2.19 or later (earlier "
+                           "versions keep the fused cross-entropy's gradient in bf16); unset it")
+    if argv is not None:
+        impl = argv[argv.index("--cross-entropy-fusion-impl") + 1] \
+            if "--cross-entropy-fusion-impl" in argv[:-1] else "native"
+        if "--cross-entropy-loss-fusion" not in argv or impl != "native":
+            _log("WARNING: HK_MEGATRON_TE_CE=1 does nothing without --cross-entropy-loss-fusion "
+                 "(and --cross-entropy-fusion-impl native, its default)")
+
+    def fused_vocab_parallel_cross_entropy(logits, labels, tp_group):
+        labels = torch.as_strided(labels, labels.size(), (labels.size()[1], 1))  # as Megatron's te branch
+        return te_parallel_cross_entropy(logits, labels, tp_group, False)
+
+    lm.fused_vocab_parallel_cross_entropy = fused_vocab_parallel_cross_entropy
+    _log("fused cross-entropy ('native' slot) -> Transformer Engine's parallel_cross_entropy")
+
+
 _INSTALLERS = (("megatron_attn", _install_attention), ("megatron_fc1_bwd", _install_fc1_bwd))
 
 
-def install(env=None) -> list:
-    """Install every megatron route its switch turns on, and the LM-head configuration if
-    HK_MEGATRON_LMHEAD_WGRAD=1; the names installed."""
+def install(env=None, argv=None) -> list:
+    """Install every megatron route its switch turns on, and the configuration switches
+    (HK_MEGATRON_LMHEAD_WGRAD=1, HK_MEGATRON_TE_CE=1); the names installed. `argv`: Megatron's
+    arguments, to warn about a switch they make a no-op."""
     env = os.environ if env is None else env
     done = []
+    if env.get("HK_MEGATRON_TE_CE", "") in switches.ON and not switches.disabled(env):
+        _install_te_ce(argv)
+        done.append("te_ce")
     if env.get("HK_MEGATRON_LMHEAD_WGRAD", "") in switches.ON and not switches.disabled(env):
         _install_lmhead_wgrad()
         done.append("lmhead_wgrad")
@@ -289,7 +329,7 @@ def main(argv=None) -> None:
         raise SystemExit("usage: python -m hk.integration.megatron pretrain_gpt.py <Megatron arguments>")
     script = os.path.abspath(argv[0])
     sys.path.insert(0, os.path.dirname(script))      # Megatron's own imports, as `python script`
-    install()
+    install(argv=argv[1:])
     sys.argv = [script] + argv[1:]
     runpy.run_path(script, run_name="__main__")
 

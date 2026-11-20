@@ -672,6 +672,7 @@ not restate it:
 | `HK_MEGATRON_ATTN` | `switches.py` | `1`: Megatron-LM's core attention on hk's (`python -m hk.integration.megatron`); `sdpa`: torch's SDPA there; off by default |
 | `HK_MEGATRON_FC1_BWD` | `switches.py` | `1`: Megatron-LM's FP8 fc1 backward on hk's fused SwiGLU backward + cast and fp8 GEMMs; off by default |
 | `HK_MEGATRON_LMHEAD_WGRAD` | `megatron.py` | `1`: Megatron's output layer accumulates its weight gradient through TE's GEMM, not apex's (configuration; [Megatron-LM](megatron.md)); 1.28B on one R9700: -59 ms an iteration, loss on real text within seed noise over 6 seeds) |
+| `HK_MEGATRON_TE_CE` | `megatron.py` | `1`, with `--cross-entropy-loss-fusion` (`--cross-entropy-fusion-impl native`): Megatron's fused cross-entropy is Transformer Engine's (2.19 or later), which the ROCm fork otherwise refuses for a bug fixed in TE 2.19 (configuration; 1.28B on one R9700: -64 ms an iteration, loss on real text within seed noise over 6 seeds and a placebo arm; [Megatron-LM](megatron.md)) |
 | `HK_SGLANG_LINEAR` | `_sglang_plugin.py` | route SGLang's unquantized linear layers (a route) |
 | `HK_SGLANG_ROUTES` | `sglang.py`, via `engine.shipped_table` | a routing table for SGLang's linear layers instead of the shipped one |
 | `HK_SGLANG_MOE` | `_sglang_plugin.py` | `1` (a route): the torch top-k and hk's expert GEMMs; `topk`: the torch top-k alone |
