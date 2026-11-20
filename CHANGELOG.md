@@ -4,37 +4,39 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
-## Unreleased
+## 0.9.25
 
-- `hk.ops.attn_bwd.attention` runs on gfx1100 (W7900D). At head_dim 128 the dQ and dK kernels keep one operand in a
-  per-warp LDS slot and do not prefetch, because gfx1100's mirrored WMMA operands made them spill. On a W7900D,
-  fwd+bwd is 2.1-3.2x torch SDPA (AOTriton), and a 1.28B BF16 trainer runs 1.24x faster, with the loss within seed
-  noise (`tools/attn-bwd-gfx1201/README.md`).
+hk-dsl 0.9.25: kernels for training on Radeon. Flash attention with its backward (`hk.ops.attn_bwd`) on gfx1201
+(R9700 / RX 9070) and gfx1100 (W7900 / RX 7900), and fp8 casts and GEMMs for an fp8 training step on gfx1201.
+Serving routes are unchanged. No change to the dialect (`hk-dialect-8`).
 
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels below are the same files.
+
+    pip install hk_dsl-0.9.25-cp312-cp312-manylinux_2_35_x86_64.whl
+
+### Changes
+
+- New `hk.ops.attn_bwd.attention`: flash attention for training, an autograd function with the dQ, dK and dV
+  backward in the DSL. BSHD bf16 (views of a fused QKV tensor read in place), MHA or GQA, causal or not, head_dim
+  64 or 128. On an R9700, fwd+bwd is 1.75-2.32x torch SDPA (AOTriton) on six training shapes. `hk.ops.attention`'s
+  kernel can also write each row's log-sum-exp (`attn_kernel(..., lse=True)`) (#411).
+- `hk.ops.attn_bwd.attention` on gfx1100 (W7900D): at head_dim 128 the dQ and dK kernels fit without spills. On a
+  W7900D fwd+bwd is 2.1-3.2x torch SDPA (AOTriton), and a 1.28B BF16 trainer runs 1.24x faster with the loss within
+  noise (#418).
+- `hk.ops.attn_bwd.attention` reads SBHD q, k, v and the output gradient in place when the batch is one
+  (Megatron's micro-batch of one), instead of copying them to BSHD (#413). Attribution switches for its kernels
+  (default off) and the measured ceiling in `tools/attn-bwd-gfx1201/README.md` (#415).
+- New `hk.ops.fp8_cast` (gfx1201): `cast_transpose` (bf16 to fp8, rowwise and transposed, with amax, Transformer
+  Engine's delayed-scaling semantics) and `swiglu_bwd_cast_transpose`, Megatron-LM's SwiGLU backward and that cast
+  in one pass (0.97 ms against 1.49 ms at 4096 x 8192 on an R9700). `hk.ops.scaled_mm(..., accumulate=True)` adds
+  the fp32 product into `out`, for a weight gradient accumulated into main_grad (#414).
+- `hk.ops.scaled_mm` (gfx1201) takes a mixed fp8 pair (e5m2 x e4m3 or e4m3 x e5m2), and runs a 128x128x128 schedule
+  when A's rows are a power of two of at least 16 KB apart: the M4096 N2048 K16384 dgrad goes from 2.0 to 1.47 ms,
+  against 1.51 ms for TunableOp-tuned hipBLASLt (#412).
 - Public hygiene: a rule for paths at the root of one machine's storage (`/w/<x>`, `/data/<x>`, `/scratch/<x>`,
-  `/mnt/<x>`, disk mounts), and `--text FILE|-` to check a PR body or issue draft before it is posted.
-- `hk.ops.attn_bwd.attention` reads SBHD q, k, v and the output gradient in place when the batch is one (Megatron's
-  micro-batch of one), instead of copying them to BSHD.
-
-- New `hk.ops.fp8_cast` (gfx1201), fp8 casts for training: `cast_transpose` (bf16 to fp8, rowwise and transposed, with
-  amax, Transformer Engine's delayed-scaling semantics) and `swiglu_bwd_cast_transpose`, Megatron-LM's SwiGLU backward
-  and that cast in one pass. Both write padded row strides for the GEMMs that read them. On an R9700 at 4096 x 8192 the
-  fused SwiGLU backward takes 0.97 ms against 1.49 ms for Megatron's kernel plus TE's quantize
-  (`tools/rdna4-probes/fp8_cast.py`).
-- `hk.ops.scaled_mm(..., accumulate=True)`: out (fp32) += the scaled product, for a weight gradient accumulated into its
-  main_grad.
-
-- New `hk.ops.attn_bwd.attention`: flash attention for training on gfx1201 (RDNA4), an autograd function with the
-  dQ, dK and dV backward in the DSL. BSHD bf16 (views of a fused QKV tensor read in place), MHA or GQA, causal or
-  not, head_dim 64 or 128. On an R9700, fwd+bwd is 1.75-2.32x torch SDPA (AOTriton) on six training shapes
-  (`tools/attn-bwd-gfx1201/bench.py`). `hk.ops.attention`'s kernel can also write each row's log-sum-exp
-  (`attn_kernel(..., lse=True)`).
-
-- `hk.ops.scaled_mm` (gfx1201) takes a mixed fp8 pair, e5m2 x e4m3 or e4m3 x e5m2: a training backward's gradient
-  against a weight. When A's rows are a power of two of at least 16 KB apart (a K-16384 operand), it runs a
-  128x128x128 schedule. Rows that far apart share a memory channel on gfx1201, and the default tile drops to about half
-  speed there. The M4096 N2048 K16384 dgrad goes from 2.0 to 1.47 ms, against 1.51 ms for TunableOp-tuned hipBLASLt. A
-  caller that pads A's rows by 64 bytes gets 1.27 ms on the default schedule (`tools/rdna4-probes/fp8_dgrad.py`).
+  `/mnt/<x>`, disk mounts), and `--text FILE|-` for PR bodies (#417).
 
 ## 0.9.24
 
