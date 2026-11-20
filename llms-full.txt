@@ -5812,8 +5812,10 @@ Flash attention with a backward, for training: (B, S, H, D) bf16 q and (B, S, H_
 k, v (MHA or GQA) -> o (B, S, H, D), differentiable in q, k and v.
 
 BSHD, the layout a QKV projection writes: q, k and v may be views of one fused (B, S,
-H + 2 H_kv, D) tensor (read in place), and so may SBHD views at B = 1; other strides (SBHD
-at B > 1, heads not D apart) are copied once. Causal is top-left with equal lengths.
+H + 2 H_kv, D) tensor (read in place), and so may views of SBHD memory (Megatron's layout, at
+any batch: read as one batch of B * H heads, with o and the gradients returned in the same
+layout); other strides (heads not D apart) are copied once. Causal is top-left with equal
+lengths.
 `scale` defaults to head_dim ** -0.5. gfx1201 (RDNA4) and gfx1100 (RDNA3), head_dim 64 or
 128, S >= 192. The forward keeps a base-2 log-sum-exp a row (fp32), the
 backward runs a Delta kernel and the dQ, dK and dV kernels; dK and dV of a shared KV head are

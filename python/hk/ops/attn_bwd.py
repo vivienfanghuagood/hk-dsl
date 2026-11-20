@@ -604,6 +604,32 @@ def _bnhd(t):
     return t
 
 
+def _is_sbhd(t) -> bool:
+    """A (B, S, H, D) view of SBHD memory -- Megatron's layout -- with B > 1: batch next to the
+    heads, D-contiguous heads."""
+    b, s, h, d = t.shape
+    return b > 1 and t.stride(3) == 1 and t.stride(2) == d and t.stride(0) == h * d
+
+
+def _as_sbhd(t):
+    """t itself if _is_sbhd, else a copy laid out SBHD (returned as the same (B, S, H, D) view)."""
+    return t if _is_sbhd(t) else t.transpose(0, 1).contiguous().transpose(0, 1)
+
+
+def _fold(t):
+    """An SBHD (B, S, H, D) view as one batch of B * H heads, (1, S, B * H, D), in place: head
+    b * H + h of the fold is head h of batch b. Attention never mixes batches or heads, and GQA's
+    head map survives it (query head b * H + h reads KV head b * H_kv + h // (H / H_kv))."""
+    b, s, h, d = t.shape
+    return t.as_strided((1, s, b * h, d), (s * t.stride(1), t.stride(1), d, 1))
+
+
+def _empty_sbhd(b: int, s: int, h: int, d: int, like):
+    import torch  # noqa: PLC0415
+
+    return torch.empty(s, b, h, d, device=like.device, dtype=like.dtype).transpose(0, 1)
+
+
 def _pad(n: int) -> int:
     r = 16 * DELTA_WARPS
     return -(-n // r) * r
@@ -654,12 +680,22 @@ def _function():
         def forward(ctx, q, k, v, causal, scale):
             b, s, h, d = q.shape
             kn = _kernels(d, causal, scale, s)
-            qb, kb, vb = _bnhd(q), _bnhd(k), _bnhd(v)
-            o = torch.empty(b, s, h, d, device=q.device, dtype=q.dtype)
-            lse = torch.empty(b, h, 1, _pad(s), device=q.device, dtype=torch.float32)
-            kn["fwd"](qb, kb, vb, _bnhd(o), lse)
+            fold = _is_sbhd(q)
+            if fold:
+                # SBHD at B > 1 (Megatron's micro-batches): one batch of B * H heads, read and
+                # written in place; o, dq, dk, dv are allocated SBHD too
+                qb, kb, vb = (_bnhd(_fold(_as_sbhd(t))) for t in (q, k, v))
+                o = _empty_sbhd(b, s, h, d, q)
+                ob = _bnhd(_fold(o))
+                lse = torch.empty(1, b * h, 1, _pad(s), device=q.device, dtype=torch.float32)
+            else:
+                qb, kb, vb = _bnhd(q), _bnhd(k), _bnhd(v)
+                o = torch.empty(b, s, h, d, device=q.device, dtype=q.dtype)
+                ob = _bnhd(o)
+                lse = torch.empty(b, h, 1, _pad(s), device=q.device, dtype=torch.float32)
+            kn["fwd"](qb, kb, vb, ob, lse)
             ctx.save_for_backward(qb, kb, vb, o, lse)
-            ctx.causal, ctx.scale, ctx.h_kv = causal, scale, k.shape[2]
+            ctx.causal, ctx.scale, ctx.h_kv, ctx.fold = causal, scale, k.shape[2], fold
             return o
 
         @staticmethod
@@ -667,15 +703,23 @@ def _function():
             qb, kb, vb, o, lse = ctx.saved_tensors
             b, s, h, d = o.shape
             kn = _kernels(d, ctx.causal, ctx.scale, s)
-            dob, ob = _bnhd(do), _bnhd(o)
+            if ctx.fold:
+                dob, ob = _bnhd(_fold(_as_sbhd(do))), _bnhd(_fold(o))
+                dq = _empty_sbhd(b, s, h, d, o)
+                dk = _empty_sbhd(b, s, ctx.h_kv, d, o)
+                dv = _empty_sbhd(b, s, ctx.h_kv, d, o)
+                dqb, dkb, dvb = (_bnhd(_fold(t)) for t in (dq, dk, dv))
+            else:
+                dob, ob = _bnhd(do), _bnhd(o)
+                dq = torch.empty(b, s, h, d, device=o.device, dtype=o.dtype)
+                dk = torch.empty(b, s, ctx.h_kv, d, device=o.device, dtype=o.dtype)
+                dv = torch.empty_like(dk)
+                dqb, dkb, dvb = _bnhd(dq), _bnhd(dk), _bnhd(dv)
             delta = torch.empty_like(lse)
             kn["delta"](ob, dob, delta)
-            dq = torch.empty(b, s, h, d, device=o.device, dtype=o.dtype)
-            dk = torch.empty(b, s, ctx.h_kv, d, device=o.device, dtype=o.dtype)
-            dv = torch.empty_like(dk)
-            kn["dq"](qb, kb, vb, dob, lse, delta, _bnhd(dq))
-            kn["dk"](qb, kb, vb, dob, lse, delta, _bnhd(dk))
-            kn["dv"](qb, kb, vb, dob, lse, delta, _bnhd(dv))
+            kn["dq"](qb, kb, vb, dob, lse, delta, dqb)
+            kn["dk"](qb, kb, vb, dob, lse, delta, dkb)
+            kn["dv"](qb, kb, vb, dob, lse, delta, dvb)
             return dq, dk, dv, None, None
 
     _Attention.fn = Attention
@@ -687,8 +731,10 @@ def attention(q, k, v, *, causal: bool = False, scale: Optional[float] = None):
     k, v (MHA or GQA) -> o (B, S, H, D), differentiable in q, k and v.
 
     BSHD, the layout a QKV projection writes: q, k and v may be views of one fused (B, S,
-    H + 2 H_kv, D) tensor (read in place), and so may SBHD views at B = 1; other strides (SBHD
-    at B > 1, heads not D apart) are copied once. Causal is top-left with equal lengths.
+    H + 2 H_kv, D) tensor (read in place), and so may views of SBHD memory (Megatron's layout, at
+    any batch: read as one batch of B * H heads, with o and the gradients returned in the same
+    layout); other strides (heads not D apart) are copied once. Causal is top-left with equal
+    lengths.
     `scale` defaults to head_dim ** -0.5. gfx1201 (RDNA4) and gfx1100 (RDNA3), head_dim 64 or
     128, S >= 192. The forward keeps a base-2 log-sum-exp a row (fp32), the
     backward runs a Delta kernel and the dQ, dK and dV kernels; dK and dV of a shared KV head are
