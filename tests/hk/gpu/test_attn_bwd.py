@@ -1,7 +1,7 @@
 """Numerics for the training attention (hk.ops.attn_bwd.attention): o, dq, dk and dv against
 float64 autograd.
 
-Needs a gfx1201 Radeon (attn_bwd.ARCHES) and torch. The reference is softmax(q k^T) v with
+Needs a gfx1201 or gfx1100 Radeon (attn_bwd.ARCHES) and torch. The reference is softmax(q k^T) v with
 autograd in float64 on the same bf16 inputs and the same bf16 upstream gradient, GQA by repeating
 the KV heads (so dk and dv come out summed over each group, as the kernels sum them). Shapes are
 small -- the head count and batch are only grid dimensions -- and the lengths divide nothing
@@ -23,7 +23,7 @@ from hk.ops import attn_bwd  # noqa: E402
 from hk.target import current_arch  # noqa: E402
 
 pytestmark = pytest.mark.skipif(current_arch() not in attn_bwd.ARCHES,
-                                reason="the attention backward is built for gfx1201")
+                                reason="the attention backward is built for gfx1201 and gfx1100")
 
 TOL = 1e-2
 

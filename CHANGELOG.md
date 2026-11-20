@@ -6,6 +6,11 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+- `hk.ops.attn_bwd.attention` runs on gfx1100 (W7900D). At head_dim 128 the dQ and dK kernels keep one operand in a
+  per-warp LDS slot and do not prefetch, because gfx1100's mirrored WMMA operands made them spill. On a W7900D,
+  fwd+bwd is 2.1-3.2x torch SDPA (AOTriton), and a 1.28B BF16 trainer runs 1.24x faster, with the loss within seed
+  noise (`tools/attn-bwd-gfx1201/README.md`).
+
 - Public hygiene: a rule for paths at the root of one machine's storage (`/w/<x>`, `/data/<x>`, `/scratch/<x>`,
   `/mnt/<x>`, disk mounts), and `--text FILE|-` to check a PR body or issue draft before it is posted.
 - `hk.ops.attn_bwd.attention` reads SBHD q, k, v and the output gradient in place when the batch is one (Megatron's

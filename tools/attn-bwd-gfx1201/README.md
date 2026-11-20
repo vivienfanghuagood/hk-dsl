@@ -1,9 +1,10 @@
-# Flash attention backward on gfx1201 (RDNA4)
+# Flash attention backward on gfx1201 (RDNA4) and gfx1100 (RDNA3)
 
 `hk.ops.attn_bwd.attention(q, k, v, causal=..., scale=...)`: flash attention for training, an autograd
 function whose forward is hk's attention kernel with a log-sum-exp output and whose backward is three
 DSL kernels (dQ, dK, dV) and a small Delta kernel. bf16, BSHD (B, S, H, D), MHA or GQA, causal (top-left,
-equal lengths) or not, head_dim 64 or 128, S >= 192. gfx1201 only, for now (see *What this is not*).
+equal lengths) or not, head_dim 64 or 128, S >= 192. gfx1201 and, with the schedule changes under
+*gfx1100* below, gfx1100.
 
 ## Results
 
@@ -112,17 +113,49 @@ time that disappears. A deletion also removes whatever fed only that stage, so t
   atomics per call, about 4x the operand traffic. A workgroup-level reduction would need about 192 KB of LDS, and the
   dK kernel has no VGPRs left for K^T.
 
+## gfx1100 (W7900D)
+
+**What changes and why.** gfx1100 holds a 16-bit WMMA operand twice, mirrored across the wave's two halves. So each
+warp's two register-resident operands cost 128 VGPRs at head_dim 128: Q and dO in dQ, K and V in dK. With them, the
+dQ and dK kernels spilled 154 and 180 VGPRs.
+
+At head_dim 128 on gfx1100 (`_SCHEDULES`), each kernel:
+- keeps its second operand (dO, V) in an LDS slot of the warp's own (`do_in_lds`, `v_in_lds`);
+- copies each K/V (or Q/dO) block into LDS when it is needed, instead of holding the next one in registers
+  (`prefetch=False`);
+- runs 8 warps, because the slots take 32 KB of LDS.
+
+The result is 239-253 VGPRs and no scratch. dV and head_dim 64 fit as they were.
+
+**Results.** Radeon PRO W7900D (gfx1100), the same image. SDPA dispatches AOTriton here too (`attn_fwd`,
+`bwd_kernel_dk_dv`, `bwd_kernel_dq`; checked with the profiler). `bench.py`, one process, interleaved:
+
+| shape | B S H/H_kv D mask | SDPA fwd+bwd ms | hk fwd+bwd ms | x | hk fwd ms | hk bwd ms (TF) |
+|---|---|---|---|---|---|---|
+| P1 | 2 2048 16/16 128 causal | 12.061 | 3.735 | 3.23 | 0.811 | 2.925 (29) |
+| P2 | 1 2048 16/16 128 causal | 6.921 | 2.213 | 3.13 | 0.497 | 1.716 (25) |
+| NC | 2 2048 16/16 128 full | 18.183 | 6.013 | 3.02 | 1.261 | 4.752 (36) |
+| G4 | 2 2048 16/4 128 causal | 11.983 | 4.183 | 2.86 | 0.816 | 3.367 (26) |
+| L1B | 1 4096 32/8 64 causal | 17.601 | 8.378 | 2.10 | 1.660 | 6.718 (26) |
+| L8B | 1 4096 32/8 128 causal | 42.874 | 13.938 | 3.08 | 2.732 | 11.206 (31) |
+
+**In training.** A 1.28B Llama-style model in BF16 (torch modules, TunableOp-tuned GEMMs in both arms, real text,
+micro-batch 2 x 4, sequence 2048) on one W7900D. 60 steps an arm, in the order SDPA, hk, hk, SDPA:
+- 6143 / 6155 tok/s with SDPA, against 7609 / 7616 with hk, which is **1.24x**.
+- The loss at step 60 is 7.342 with SDPA and 7.340 with hk.
+- Memory is the same.
+- Loss over 200 steps, 3 seeds paired: hk minus SDPA was -0.0033 (sd 0.0092) over steps 151-200, signs mixed. A
+  placebo arm (SDPA with hipBLASLt's default GEMM algorithms) moved it +0.026.
+
 ## What this is not
 
-- gfx1201 only. On gfx1100 the dQ kernel at d128 spills under the VOPD-free build gfx11 needs; it is
-  rejected rather than run.
 - No attention mask, no dropout, no bottom-right causal, no Sq != Sk, no variable-length batches.
 - No fp8: bf16 in and out, fp32 LSE and Delta.
 - Deterministic (no atomics), and not the fastest possible: the 8-vs-5 matmul overhead is the known gap.
 
 ## Reproduce
 
-    python -m pytest tests/hk/gpu/test_attn_bwd.py          # o, dq, dk, dv vs float64 autograd
+    python -m pytest tests/hk/gpu/test_attn_bwd.py          # o, dq, dk, dv vs float64 autograd (gfx1201, gfx1100)
     python tools/attn-bwd-gfx1201/bench.py                  # the table above
 
 `HK_ARCH=gfx1201` if the arch is not detected.
