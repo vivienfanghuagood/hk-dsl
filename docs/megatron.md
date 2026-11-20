@@ -83,7 +83,7 @@ how to save and reload the results, and how to check that they loaded. The basel
   - How the recipe selects it: `HK_MEGATRON_TE_CE=1` puts TE's kernel in the slot `native` names. It refuses a TE
     older than 2.19.
   - When the fork gates the check on the TE version, as upstream Megatron-LM does (#7339), pass
-    `--cross-entropy-fusion-impl te` and drop the switch. TBD: link to the fork PR.
+    `--cross-entropy-fusion-impl te` and drop the switch. The fork PR is [ROCm/Megatron-LM#169](https://github.com/ROCm/Megatron-LM/pull/169).
 - **Attention backward beyond today's.** Measured ceiling and the levers left: `tools/attn-bwd-gfx1201/README.md`.
 
 ## Reproduce the A/B
