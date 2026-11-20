@@ -18,6 +18,11 @@ docs/vllm.md                /root/\.cache/hk
 
 # A made-up HOME in a unit test of the cache path.
 tests/hk/ir/test_vllm_gemm.py   /home/u
+# A made-up VLLM_CACHE_ROOT in the same tests.
+tests/hk/ir/test_vllm_gemm.py   /data/vllm
+
+# The gfx1201 CI container mounts the job's directory at /w (its own layout, not a machine's).
+scripts/ci/gfx1201/run_in_container   /w/home
 
 # The engine container's software layout, which scripts, tools and docs default to or cite: the
 # engines' venvs, the FlyDSL and HipKittens checkouts, the LLVM build, extra packages. The same

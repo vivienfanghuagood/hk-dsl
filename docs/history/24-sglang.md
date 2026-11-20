@@ -13,8 +13,8 @@ serve 1.49-1.81x faster.
 ## The pod
 
 - **The volume.** The pod mounts a 300 GiB claim of the `disk-local`
-  storage class at `/workspace`. It is a hostPath under `/disk/ssd2` on the
-  node: a separate 3.5 TB NVMe, not the root disk whose eviction threshold
+  storage class at `/workspace`. It is a hostPath on the
+  node's second disk: a separate 3.5 TB NVMe, not the root disk whose eviction threshold
   took the last pod. Every cache points into the volume (`HF_HOME`,
   `PIP_CACHE_DIR`, `UV_CACHE_DIR`, `UV_PYTHON_INSTALL_DIR`, `TMPDIR`), and
   so do the models and venvs. `WaitForFirstConsumer` binds the volume

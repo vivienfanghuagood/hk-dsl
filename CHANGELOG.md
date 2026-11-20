@@ -6,6 +6,8 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+- Public hygiene: a rule for paths at the root of one machine's storage (`/w/<x>`, `/data/<x>`, `/scratch/<x>`,
+  `/mnt/<x>`, disk mounts), and `--text FILE|-` to check a PR body or issue draft before it is posted.
 - `hk.ops.attn_bwd.attention` reads SBHD q, k, v and the output gradient in place when the batch is one (Megatron's
   micro-batch of one), instead of copying them to BSHD.
 

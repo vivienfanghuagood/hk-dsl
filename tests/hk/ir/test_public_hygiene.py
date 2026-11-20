@@ -43,9 +43,23 @@ def _hits(rule: str, text: str) -> list[str]:
      ['"host": "abcdef012345"', '"hostname": "0123456789ab"']),
     ("container-host", '"host": "<host>", "host": "abcdef01234", "sha": "0123456789ab"', []),
     ("home-path", "/home/alice/x but not $HOME or ~/.cache", ["/home/alice"]),
+    ("root-scratch-path", "the snapshot /w/box3-20261101/run.log, data in /data/ckpt and /mnt/nfs1/x",
+     ["/w/box3-20261101", "/data/ckpt", "/mnt/nfs1"]),
+    ("root-scratch-path", "cd /scratch2/me; ls /nvme0/models /disk2/x", ["/scratch2/me", "/nvme0/models", "/disk2/x"]),
+    ("root-scratch-path", "/usr/lib, /opt/rocm, /tmp/x, /dev/kfd, /proc/1, a/w/b, https://x.org/data/y, "
+     "$HOME/data/x, ${D}/data/x, ~/data/x, ./data/x, /workdir/x, /window", []),
 ])
+
 def test_rules(rule, text, want):
     assert _hits(rule, text) == want
+
+def test_text_mode(tmp_path, capsys):
+    body = tmp_path / "body.md"
+    body.write_text("Repro:\n```bash\npython3 run.py --out /tmp/x\n```\nlogs in /w/snap-0101/out\n")
+    assert MOD.main(["--text", str(body)]) == 1
+    assert "[root-scratch-path] /w/snap-0101" in capsys.readouterr().out
+    body.write_text("```bash\nexport PATH=/opt/rocm/bin:/usr/bin\n```\n")
+    assert MOD.main(["--text", str(body)]) == 0
 
 
 def test_patterns_file(tmp_path):
