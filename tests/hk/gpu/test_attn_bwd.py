@@ -118,6 +118,20 @@ def test_sbhd_one_batch_in_place():
     _check(q, k, v, True)
 
 
+@pytest.mark.parametrize("h,h_kv", [(4, 4), (4, 2)])
+def test_sbhd_batches_folded(h, h_kv):
+    """Megatron's SBHD at B > 1: read as one batch of B * H heads, no copy of q / k, and o comes
+    back in SBHD memory; GQA's head map holds across the fold."""
+    s, b, d = 320, 3, 128
+    q = _bshd(s, b, h, d, 13).permute(1, 0, 2, 3)
+    k = _bshd(s, b, h_kv, d, 14).permute(1, 0, 2, 3)
+    v = _bshd(s, b, h_kv, d, 15).permute(1, 0, 2, 3)
+    assert attn_bwd._is_sbhd(q) and attn_bwd._fold(q).data_ptr() == q.data_ptr()
+    o = attn_bwd.attention(q, k, v, causal=True)
+    assert o.transpose(0, 1).is_contiguous()
+    _check(q, k, v, True)
+
+
 def test_rejects():
     q = _bshd(1, 256, 4, 128, 0)
     assert "head_dim" in attn_bwd.why_unsupported(q[..., :96], q[..., :96], q[..., :96])
