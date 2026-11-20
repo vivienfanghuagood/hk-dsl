@@ -93,6 +93,7 @@ Coding agents: start from [llms.txt](../llms.txt) and the
 |---|---|
 | [hk in vLLM](vllm.md) | enable hk in vLLM in one command, check it is on, which GPUs and models, turn it off, troubleshooting |
 | [hk in SGLang](sglang.md) | the same for SGLang, and SGLang-Diffusion's one install command |
+| [hk in Megatron-LM training](megatron.md) | RDNA4 (gfx1201) FP8 training: one launcher, hk's attention and fc1 backward, the configuration, the measured A/B (draft) |
 | [Integration](integration.md) | what applies to every engine: on by default and turning it off, `--status`, the plugins, `Op` / `Patch` / `RouteTable`, host time, routing tables, the CUDA-graph contract, supported versions and contract tests, your own kernel, the environment variables |
 | [Support matrix](support-matrix.md) | the engine versions, images and GPUs this release is tested with (generated) |
 | [Use a kernel as a PyTorch op](torch-ops.md) | `hk.torch_op`: your kernel as a `torch.library` op, eager, under `torch.compile` and in CUDA graphs, and what Inductor does not do with it |

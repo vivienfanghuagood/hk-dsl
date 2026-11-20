@@ -43,6 +43,7 @@ ENGINES: Dict[str, str] = {
     "vllm": "HK_PATCH_VLLM",
     "sglang": "HK_PATCH_SGLANG",
     "sglang_diffusion": "HK_SGLD",
+    "megatron": "HK_PATCH_MEGATRON",
     "ops": "",
 }
 
@@ -256,6 +257,20 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
     _R("sdpa_k3", "ops", "HK_SDPA_K3", True, ("gfx1100",),
        "hk.ops.sdpa's non-causal head_dim-128 calls on its newer kernel (hk.ops.attn_k3)",
        "per-call error 2.95e-5 vs the current path's 4.50e-5 at Qwen-Image's shape (#24)"),
+    _R("megatron_attn", "megatron", "HK_MEGATRON_ATTN", False, (),
+       "Megatron-LM's core attention on hk.ops.attn_bwd.attention (flash attention forward and "
+       "backward) in place of TE's unfused DotProductAttention: causal or unmasked self-attention, "
+       "no dropout, head_dim 64 or 128 (python -m hk.integration.megatron)",
+       "opt-in (a new integration). With the recipe's other switches, a 1.28B Megatron run on one "
+       "R9700 trains 1.43x faster than BF16 + SDPA, loss within seed noise (docs/megatron.md); the "
+       "kernels are hk.ops.attn_bwd's (tests/hk/gpu/test_attn_bwd.py)"),
+    _R("megatron_fc1_bwd", "megatron", "HK_MEGATRON_FC1_BWD", False, (),
+       "the MLP's fc1 backward under FP8 delayed scaling: SwiGLU backward + fp8 cast as one kernel "
+       "(hk.ops.fp8_cast), padded e5m2 gradient, fc1's dgrad and wgrad on hk.ops.gemm.scaled_mm",
+       "opt-in (a new integration). 1.28B FP8 on one R9700, mbs 2: 1294.7 -> 1261.9 ms an iteration "
+       "(60 iterations, ABBA); loss on real text, 6 seeds, steps 151-200: hook - base -0.006 +- 0.015 "
+       "a seed, inside a placebo arm's -0.014; per call in the step, the fp8 codes match Megatron + "
+       "TE's cast but for 1e-5 of them (one code), dgrad 4e-5 from TE's GEMM (docs/megatron.md)"),
 )}
 
 

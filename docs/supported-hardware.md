@@ -60,5 +60,7 @@ A route is on by default only on the GPUs where it met the [default-on rule](tes
 | `sgld_h3vae` | SGLang-Diffusion | `HK_SGLD_H3VAE` | opt-in | opt-in | opt-in | opt-in |
 | `sgld_patchembed` | SGLang-Diffusion | `HK_SGLD_PATCHEMBED` | opt-in | opt-in | opt-in | opt-in |
 | `sdpa_k3` | `hk.ops` | `HK_SDPA_K3` | **on** | off | off | off |
+| `megatron_attn` | Megatron-LM | `HK_MEGATRON_ATTN` | opt-in | opt-in | opt-in | opt-in |
+| `megatron_fc1_bwd` | Megatron-LM | `HK_MEGATRON_FC1_BWD` | opt-in | opt-in | opt-in | opt-in |
 
 **Off by default for a second weight copy.** `vllm_int4` on gfx1100, gfx950, gfx1201; `vllm_quark` on gfx1100: holds a second copy of the 4-bit weights (~12 GB on a 27B model, taken from the KV cache). Each switch at `1` turns its route on; the startup log lists them. They come back on when they read vLLM's weights in place.

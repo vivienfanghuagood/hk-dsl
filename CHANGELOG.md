@@ -17,6 +17,11 @@ The next version's notes collect here until it is released.
 
 - Public hygiene: a rule for paths at the root of one machine's storage (`/w/<x>`, `/data/<x>`, `/scratch/<x>`,
   `/mnt/<x>`, disk mounts), and `--text FILE|-` to check a PR body or issue draft before it is posted.
+- New `hk.integration.megatron` (gfx1201): `python -m hk.integration.megatron pretrain_gpt.py ...` runs Megatron-LM with
+  hk's attention (`HK_MEGATRON_ATTN`, or `=sdpa` for torch's) and FP8 fc1 backward (`HK_MEGATRON_FC1_BWD`), plus the
+  output layer's weight gradient on TE's GEMM (`HK_MEGATRON_LMHEAD_WGRAD`). No changes to Megatron's or TE's source.
+  The recipe is in docs/megatron.md.
+
 - `hk.ops.attn_bwd.attention` reads SBHD q, k, v and the output gradient in place when the batch is one (Megatron's
   micro-batch of one), instead of copying them to BSHD.
 
