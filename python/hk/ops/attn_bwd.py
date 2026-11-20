@@ -41,11 +41,19 @@ LOG2E = math.log2(math.e)
 def dq_kernel(name: str, *, head_dim: int = 128, q_block: int = 16, kv_block: int = 32,
               warps: int = 12, causal: bool = False, scale: Optional[float] = None,
               bnhd: bool = False, setprio: bool = True, max_vgprs: int = 256,
-              min_occupancy: int = 1, ablate: frozenset = frozenset()):
+              min_occupancy: int = 1, ablate: frozenset = frozenset(),
+              do_in_lds: bool = False, prefetch: bool = True):
     """dQ for one (head_dim, causal, scale). Arguments: q, k, v, do (bf16, the forward's
     layout), lse and delta (fp32 (B, H, 1, N): base-2 LSE of the scaled scores, rowsum(dO . O)),
     dq (bf16, q's layout). `ablate`: as dkv_kernel's ("stage", "transpose" (K^T), "s_mma",
-    "dp_mma", "acc_mma", "softmax", "ds"); timing only."""
+    "dp_mma", "acc_mma", "softmax", "ds"); timing only.
+
+    `do_in_lds`: this warp's dO rows sit in an LDS slot of its own, read a fragment at a time as
+    dP^T's B operand, instead of in registers. gfx1100 holds a 16-bit operand twice (WMMA's
+    operands are mirrored across the wave's halves), so Q and dO in registers alone are 128 VGPRs
+    at head_dim 128 and the kernel spills; this frees 64 of them for 16 * head_dim * 2 bytes of
+    LDS a warp. `prefetch=False` copies each K/V block straight into LDS when it is needed
+    instead of holding the next one in registers (the staging buffers' VGPRs, gfx1100)."""
     d = _derive(head_dim, q_block, kv_block, warps, 16, 2, 2)
     q_tile, d_frags, kv_frags = d["q_tile"], d["d_frags"], d["kv_frags"]
     d_chunks, v_bands, vt_frags = d["d_chunks"], d["v_bands"], d["vt_frags"]
@@ -71,11 +79,14 @@ def dq_kernel(name: str, *, head_dim: int = 128, q_block: int = 16, kv_block: in
         k_s = hk.lds.alloc(st_k, name="k_s")
         v_s = hk.lds.alloc(st_k, name="v_s")
         kt_s = hk.lds.alloc(st_kt, name="kt_s")
-        buf_k = g.stage_buffer(k_s, name="buf_k")
-        buf_v = g.stage_buffer(v_s, name="buf_v")
+        if prefetch:
+            buf_k = g.stage_buffer(k_s, name="buf_k")
+            buf_v = g.stage_buffer(v_s, name="buf_v")
         gr_k = k_s.granules(name="gr_k")
         gr_v = v_s.granules(name="gr_v")
         gr_kt = kt_s.granules(name="gr_kt")
+        if do_in_lds:
+            do_s = hk.lds.alloc(hk.ST(bf16, 16, head_dim), count=warps, name="do_s")
 
         b = hk.arch.block_idx.z
         head, qb = hk.arch.block_idx.y, hk.arch.block_idx.x
@@ -98,7 +109,14 @@ def dq_kernel(name: str, *, head_dim: int = 128, q_block: int = 16, kv_block: in
         q_row = q_tile_start + wid * q_block
 
         q_r = [at(q, head, q_row, 16 * kk).load(ty_q) for kk in range(d_frags)]
-        do_r = [at(dout, head, q_row, 16 * kk).load(ty_q) for kk in range(d_frags)]
+        if do_in_lds:
+            gr_do = do_s[hk.arch.warp_id()].granules(name="gr_do")
+            for kk in range(d_frags):
+                gr_do.store_frag(at(dout, head, q_row, 16 * kk).load(ty_q), 0, kk)
+            hk.arch.barrier(drain=True)       # retire the writes (each warp reads only its own slot)
+            do_r = None
+        else:
+            do_r = [at(dout, head, q_row, 16 * kk).load(ty_q) for kk in range(d_frags)]
         lse_v = lse[hk.elem_coord(b, head, 0, q_row)].load(ty_vec)
         dl_v = delta[hk.elem_coord(b, head, 0, q_row)].load(ty_vec)
 
@@ -122,17 +140,28 @@ def dq_kernel(name: str, *, head_dim: int = 128, q_block: int = 16, kv_block: in
                         at(k, head_kv, kv_start + 16 * w, c_chunk * 16).load(ty_slab,
                                                                              into=k_rows[w])
                 return
-            g.stage(buf_k, at(k, head_kv, kv_start, 0))
-            g.stage(buf_v, at(v, head_kv, kv_start, 0))
-            if stages_kt:
-                for w in range(v_bands):
-                    at(k, head_kv, kv_start + 16 * w, c_chunk * 16).load(ty_slab, into=k_rows[w])
+            if prefetch:
+                g.stage(buf_k, at(k, head_kv, kv_start, 0))
+                g.stage(buf_v, at(v, head_kv, kv_start, 0))
+                if stages_kt:
+                    for w in range(v_bands):
+                        at(k, head_kv, kv_start + 16 * w, c_chunk * 16).load(ty_slab,
+                                                                             into=k_rows[w])
 
-        def commit_kv():
+        def commit_kv(kv_start):
             hk.arch.vm_wait(0)
-            if "stage" not in ablate:
+            if "stage" in ablate:
+                pass
+            elif prefetch:
                 g.commit(k_s, buf_k)
                 g.commit(v_s, buf_v)
+            else:
+                g.load(k_s, at(k, head_kv, kv_start, 0))
+                g.load(v_s, at(v, head_kv, kv_start, 0))
+                if stages_kt:     # K^T's slabs, now rather than a block ahead
+                    for w in range(v_bands):
+                        at(k, head_kv, kv_start + 16 * w, c_chunk * 16).load(ty_slab,
+                                                                             into=k_rows[w])
             if stages_kt:
                 for w in range(v_bands):
                     k_t = hk.transpose_sep(k_rows[w])
@@ -171,11 +200,16 @@ def dq_kernel(name: str, *, head_dim: int = 128, q_block: int = 16, kv_block: in
                 for kk in range(d_frags if "dp_mma" not in ablate else 0):
                     for n0 in range(0, kv_frags, 2):
                         v_win = [gr_v.load_frag(n0 + i, kk, ty_k) for i in range(2)]
-                        hk.lds.wait_for(*v_win)
+                        if do_in_lds:
+                            do_f = gr_do.load_frag(0, kk, ty_q)
+                            hk.lds.wait_for(*v_win, do_f)
+                        else:
+                            do_f = do_r[kk]
+                            hk.lds.wait_for(*v_win)
                         if setprio:
                             hk.arch.setprio(1)
                         for i in range(2):
-                            dp_f[n0 + i] += v_win[i] @ do_r[kk].T
+                            dp_f[n0 + i] += v_win[i] @ do_f.T
                         if setprio:
                             hk.arch.setprio(0)
                 # ---- dS^T = P^T . (dP^T - Delta); dQ^T += K^T . dS^T ------------------
@@ -200,7 +234,7 @@ def dq_kernel(name: str, *, head_dim: int = 128, q_block: int = 16, kv_block: in
             kv_start = hk.min(kv_lo, n_kv - kv_block)
             skip = kv_lo - kv_start
             hk.arch.barrier()
-            commit_kv()
+            commit_kv(kv_start)
             hk.arch.barrier(drain=True)
             load_kv(block_start(kb + 1))
             block_math(kv_start, skip)
@@ -222,7 +256,8 @@ def dq_kernel(name: str, *, head_dim: int = 128, q_block: int = 16, kv_block: in
 def dkv_kernel(name: str, *, mode: str, head_dim: int = 128, kv_rows: int = 16, q_block: int = 32,
                warps: int = 12, causal: bool = False, scale: Optional[float] = None,
                bnhd: bool = False, setprio: bool = True, max_vgprs: int = 256,
-               min_occupancy: int = 1, ablate: frozenset = frozenset()):
+               min_occupancy: int = 1, ablate: frozenset = frozenset(),
+               v_in_lds: bool = False, prefetch: bool = True):
     """dK (mode="dk") or dV (mode="dv"): `dq_kernel` with the roles of Q and KV swapped. A warp
     owns 16 KV rows -- K (and for dK, V) in registers -- and the workgroup walks the Q blocks,
     staging Q and dO through LDS, prefetched one block ahead exactly as the forward and dQ stage
@@ -240,7 +275,11 @@ def dkv_kernel(name: str, *, mode: str, head_dim: int = 128, kv_rows: int = 16, 
     `ablate` (timing only; the results are wrong): stages to delete -- "stage" (Q/dO global
     loads and their LDS commit), "transpose" (the transposed tile's loads and register
     transposes), "s_mma", "dp_mma", "acc_mma" (the three products), "softmax" (scale, mask,
-    LSE and exp2), "ds" (Delta and the dS product)."""
+    LSE and exp2), "ds" (Delta and the dS product).
+
+    `v_in_lds` (dK only): this warp's V rows sit in an LDS slot of its own, read a fragment at a
+    time as dP's B operand, instead of in registers -- dq_kernel's `do_in_lds`, for gfx1100's
+    mirrored operands. `prefetch=False`: dq_kernel's."""
     if mode not in ("dk", "dv"):
         raise ValueError(f"mode is 'dk' or 'dv', not {mode!r}")
     if kv_rows != 16:
@@ -267,14 +306,17 @@ def dkv_kernel(name: str, *, mode: str, head_dim: int = 128, kv_rows: int = 16, 
         # Q is S's A operand in both modes; dO is dP's in dK mode; the transposed tile is
         # Q^T (dK) or dO^T (dV).
         q_s = hk.lds.alloc(st_q, name="q_s")
-        buf_q = g.stage_buffer(q_s, name="buf_q")
+        buf_q = g.stage_buffer(q_s, name="buf_q") if prefetch else None
         gr_q = q_s.granules(name="gr_q")
         if dk_mode:
             o_s = hk.lds.alloc(st_q, name="do_s")
-            buf_o = g.stage_buffer(o_s, name="buf_do")
+            buf_o = g.stage_buffer(o_s, name="buf_do") if prefetch else None
             gr_o = o_s.granules(name="gr_do")
         t_s = hk.lds.alloc(st_qt, name="t_s")
         gr_t = t_s.granules(name="gr_t")
+        v_lds = dk_mode and v_in_lds
+        if v_lds:
+            v_slot = hk.lds.alloc(hk.ST(bf16, 16, head_dim), count=warps, name="v_slot")
 
         b = hk.arch.block_idx.z
         head_kv, kb = hk.arch.block_idx.y, hk.arch.block_idx.x
@@ -295,7 +337,12 @@ def dkv_kernel(name: str, *, mode: str, head_dim: int = 128, kv_rows: int = 16, 
         kv_row = kv_tile_start + wid * 16
 
         k_r = [at(k, head_kv, kv_row, 16 * kk).load(ty_op) for kk in range(d_frags)]
-        if dk_mode:
+        if v_lds:
+            gr_vs = v_slot[hk.arch.warp_id()].granules(name="gr_vs")
+            for kk in range(d_frags):
+                gr_vs.store_frag(at(v, head_kv, kv_row, 16 * kk).load(ty_op), 0, kk)
+            hk.arch.barrier(drain=True)       # retire the writes (each warp reads only its own slot)
+        elif dk_mode:
             v_r = [at(v, head_kv, kv_row, 16 * kk).load(ty_op) for kk in range(d_frags)]
         acc = [hk.zeros(ty_acc) for _ in range(d_frags)]
         t_rows = [hk.zeros(ty_op) for _ in range(q_bands)]
@@ -318,19 +365,29 @@ def dkv_kernel(name: str, *, mode: str, head_dim: int = 128, kv_rows: int = 16, 
                     for w in range(q_bands):
                         at(src_t, h, q_start + 16 * w, c_chunk * 16).load(ty_op, into=t_rows[w])
                 return
-            g.stage(buf_q, at(q, h, q_start, 0))
-            if dk_mode:
-                g.stage(buf_o, at(dout, h, q_start, 0))
-            if stages_t:
-                for w in range(q_bands):
-                    at(src_t, h, q_start + 16 * w, c_chunk * 16).load(ty_op, into=t_rows[w])
+            if prefetch:
+                g.stage(buf_q, at(q, h, q_start, 0))
+                if dk_mode:
+                    g.stage(buf_o, at(dout, h, q_start, 0))
+                if stages_t:
+                    for w in range(q_bands):
+                        at(src_t, h, q_start + 16 * w, c_chunk * 16).load(ty_op, into=t_rows[w])
 
-        def commit_q():
+        def commit_q(h, q_start):
             hk.arch.vm_wait(0)
-            if "stage" not in ablate:
+            if "stage" in ablate:
+                pass
+            elif prefetch:
                 g.commit(q_s, buf_q)
                 if dk_mode:
                     g.commit(o_s, buf_o)
+            else:
+                g.load(q_s, at(q, h, q_start, 0))
+                if dk_mode:
+                    g.load(o_s, at(dout, h, q_start, 0))
+                if stages_t:      # the transposed tile's rows, now rather than a block ahead
+                    for w in range(q_bands):
+                        at(src_t, h, q_start + 16 * w, c_chunk * 16).load(ty_op, into=t_rows[w])
             if stages_t:
                 for w in range(q_bands):
                     tt = hk.transpose_sep(t_rows[w])
@@ -378,11 +435,16 @@ def dkv_kernel(name: str, *, mode: str, head_dim: int = 128, kv_rows: int = 16, 
                             else:
                                 o_win = [gr_o.load_frag(n0 + i, kk, ty_op) for i in range(2)]
                                 o_keep = o_win
-                            hk.lds.wait_for(*o_win)
+                            if v_lds:
+                                v_f = gr_vs.load_frag(0, kk, ty_op)
+                                hk.lds.wait_for(*o_win, v_f)
+                            else:
+                                v_f = v_r[kk]
+                                hk.lds.wait_for(*o_win)
                             if setprio:
                                 hk.arch.setprio(1)
                             for i in range(2):
-                                dp_f[n0 + i] += o_win[i] @ v_r[kk].T
+                                dp_f[n0 + i] += o_win[i] @ v_f.T
                             if setprio:
                                 hk.arch.setprio(0)
                     for n in range(q_frags if "ds" not in ablate else 0):
@@ -417,7 +479,7 @@ def dkv_kernel(name: str, *, mode: str, head_dim: int = 128, kv_rows: int = 16, 
                 q_start = hk.min(q_lo, n_q - q_block)
                 skip = q_lo - q_start
                 hk.arch.barrier()
-                commit_q()
+                commit_q(h, q_start)
                 hk.arch.barrier(drain=True)
                 load_q(h, block_start(h, qi + 1))
                 block_math(h, q_start, skip)
@@ -469,9 +531,8 @@ def delta_kernel(name: str, *, head_dim: int = 128, warps: int = 4, bnhd: bool =
 
 #: Rows of the delta kernel's workgroup; LSE and Delta are padded to a multiple of it.
 DELTA_WARPS = 4
-#: Archs the backward is built and checked on. gfx1100 is not one yet: its dQ kernel at head
-#: dim 128 spills (236 B/lane) under the VOPD-free rebuild gfx11 needs.
-ARCHES = ("gfx1201",)
+#: Archs the backward is built and checked on.
+ARCHES = ("gfx1201", "gfx1100")
 HEAD_DIMS = (64, 128)
 #: The shortest sequence every kernel's tile fits in: the forward's and the backward's 192-row
 #: tiles (12 warps x 16 rows). A tile is moved back to end on the last row, so it needs that many.
@@ -479,6 +540,18 @@ MIN_SEQ = 192
 
 _KERNELS: dict = {}
 _FWD: dict = {}
+
+
+#: Per (arch, head_dim) schedule changes from the kernels' defaults. gfx1100 holds a 16-bit WMMA
+#: operand twice (mirrored across the wave's halves), so at head_dim 128 the dQ and dK kernels
+#: spill with two operands resident in registers (154 and 180 VGPRs over). There each keeps its
+#: second operand (dO, V) in an LDS slot a warp, copies K/V or Q/dO blocks into LDS when needed
+#: rather than a block ahead in registers, and runs 8 warps (the slots' LDS): 239-253 VGPRs, no
+#: scratch.
+_SCHEDULES = {
+    ("gfx1100", 128): dict(dq=dict(warps=8, do_in_lds=True, prefetch=False),
+                           dk=dict(warps=8, v_in_lds=True, prefetch=False)),
+}
 
 
 def _kernels(head_dim: int, causal: bool, scale: Optional[float], n: int):
@@ -496,15 +569,18 @@ def _kernels(head_dim: int, causal: bool, scale: Optional[float], n: int):
         sfx += f"_s{struct.unpack('<Q', struct.pack('<d', sc))[0]:016x}"
     k = _KERNELS.get(key)
     if k is None:
+        from ..target import current_arch  # noqa: PLC0415
+
+        sch = _SCHEDULES.get((current_arch(), head_dim), {})
         k = _KERNELS[key] = dict(
             delta=delta_kernel(f"attn_bwd_delta_bnhd_d{head_dim}", head_dim=head_dim,
                                warps=DELTA_WARPS, bnhd=True),
             dq=dq_kernel(f"attn_bwd_dq_bnhd_{sfx}", head_dim=head_dim, causal=causal, scale=sc,
-                         bnhd=True),
+                         bnhd=True, **sch.get("dq", {})),
             dk=dkv_kernel(f"attn_bwd_dk_bnhd_{sfx}", mode="dk", head_dim=head_dim,
-                          causal=causal, scale=sc, bnhd=True),
+                          causal=causal, scale=sc, bnhd=True, **sch.get("dk", {})),
             dv=dkv_kernel(f"attn_bwd_dv_bnhd_{sfx}", mode="dv", head_dim=head_dim,
-                          causal=causal, scale=sc, bnhd=True))
+                          causal=causal, scale=sc, bnhd=True, **sch.get("dv", {})))
     fk = key + (bool(til),)
     if fk not in _FWD:
         _FWD[fk] = _attn.attn_kernel(f"attn_fwd_lse_bnhd_{sfx}{'_tiled' if til else ''}",
@@ -612,9 +688,9 @@ def attention(q, k, v, *, causal: bool = False, scale: Optional[float] = None):
 
     BSHD, the layout a QKV projection writes: q, k and v may be views of one fused (B, S,
     H + 2 H_kv, D) tensor (read in place), and so may SBHD views at B = 1; other strides (SBHD
-    at B > 1, heads not D apart) are copied once. Causal is
-    top-left with equal lengths. `scale` defaults to head_dim ** -0.5. gfx1201 (RDNA4),
-    head_dim 64 or 128, S >= 192. The forward keeps a base-2 log-sum-exp a row (fp32), the
+    at B > 1, heads not D apart) are copied once. Causal is top-left with equal lengths.
+    `scale` defaults to head_dim ** -0.5. gfx1201 (RDNA4) and gfx1100 (RDNA3), head_dim 64 or
+    128, S >= 192. The forward keeps a base-2 log-sum-exp a row (fp32), the
     backward runs a Delta kernel and the dQ, dK and dV kernels; dK and dV of a shared KV head are
     summed over its query heads inside the kernels."""
     why = why_unsupported(q, k, v)
