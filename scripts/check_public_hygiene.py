@@ -13,8 +13,12 @@ allowlist does not name:
 
 The built-in rules are generic (they name no machine): private and shared
 IPv4 ranges, /home/<user>, /root/, /dev/shm/<name>, internal-only domain
-suffixes, PCI addresses, /workspace/<name>, ~/<dir>, and a container's
-hex hostname in a "host" field. The names of a particular site cannot be
+suffixes, PCI addresses, /workspace/<name>, ~/<dir>, a machine's own
+storage at the root (/w/<x>, /data/<x>, /scratch/<x>, /mnt/<x>, ...), and a
+container's hex hostname in a "host" field.
+
+`--text FILE` (or `--text -` for stdin) checks a text instead of the tracked
+files, with no allowlist: a PR body or an issue draft before it is posted. The names of a particular site cannot be
 listed here without publishing them, so a maintainer keeps them in a local
 file, one regular expression per line (a line starting with '#' is a comment),
 passed with --patterns or in HK_HYGIENE_PATTERNS (paths separated by ':').
@@ -61,6 +65,11 @@ RULES: dict[str, str] = {
     "workspace-path": r"(?<![\w.<])/workspace/[A-Za-z0-9_.-]+",
     # A non-hidden directory in someone's home (~/.cache and the like are fine).
     "home-dir": r"(?<![\w/~])~/[A-Za-z][A-Za-z0-9_.-]*",
+    # A directory at the root of one machine's own storage: a box's snapshot or scratch area
+    # (/w/<x>, /data/<x>, /scratch/<x>, /mnt/<x>, a disk mount). System paths (/usr/, /opt/, /tmp/,
+    # /dev/, /proc/) and the same names inside a URL, $VAR/... or a relative path are not.
+    "root-scratch-path": (r"(?<![\w.~/:$}-])/(?:w|data\d*|scratch\d*|mnt|nfs|lustre|shared|datasets|"
+                          r"ssd\d*|nvme\d*|raid\d*|disk\d*)/[A-Za-z0-9_.-]+"),
     # A container's hostname (12 hex digits, as docker makes it) recorded as a host.
     "container-host": r"\"host(?:name)?\":\s*\"[0-9a-f]{12}\"",
 }
@@ -100,6 +109,13 @@ def load_allow(path: Path) -> list[tuple[str, re.Pattern]]:
     return allow
 
 
+def scan_text(text, rules):
+    """Hits of `rules` in a text (a PR body, an issue draft): [(lineno, rule, matched text)]."""
+    compiled = {k: re.compile(v) for k, v in rules.items()}
+    return [(n, rule, m.group(0)) for n, line in enumerate(text.splitlines(), 1)
+            for rule, rx in compiled.items() for m in rx.finditer(line)]
+
+
 def scan(files, rules, allow):
     compiled = {k: re.compile(v) for k, v in rules.items()}
     hits, allowed = [], []
@@ -123,10 +139,19 @@ def main(argv=None) -> int:
                     help="a file of extra regular expressions (one a line)")
     ap.add_argument("--allow", default=str(ALLOW), help="the allowlist (default: %(default)s)")
     ap.add_argument("--show-allowed", action="store_true", help="list the allowed hits too")
+    ap.add_argument("--text", metavar="FILE", help="check this text ('-': stdin) instead of the tracked "
+                    "files, without the allowlist (a PR body before it is posted)")
     args = ap.parse_args(argv)
     extra = args.patterns + [p for p in os.environ.get("HK_HYGIENE_PATTERNS", "").split(":") if p]
     rules = dict(RULES)
     rules.update(load_patterns(extra))
+    if args.text:
+        text = sys.stdin.read() if args.text == "-" else Path(args.text).read_text(errors="replace")
+        hits = scan_text(text, rules)
+        for n, rule, found in hits:
+            print(f"{args.text}:{n}: [{rule}] {found}")
+        print(f"public hygiene (text): {len(hits)} hit(s) ({len(rules)} rules)", file=sys.stderr)
+        return 1 if hits else 0
     hits, allowed = scan(tracked_files(), rules, load_allow(Path(args.allow)))
     if args.show_allowed:
         for rel, n, rule, text in allowed:
