@@ -52,6 +52,36 @@ def _log(msg: str) -> None:
     print(f"[hk] megatron: {msg}", flush=True)
 
 
+#: Calls by path, for the share line: attention on hk / on torch SDPA, fc1's SwiGLU backward on hk,
+#: fc1's dgrad / wgrad on hk.ops.gemm, the GEMMs left on TE, cross-entropy on TE's fused kernel.
+_CALLS = {"attn_hk": 0, "attn_sdpa": 0, "swiglu_bwd_hk": 0, "dgrad_hk": 0, "wgrad_hk": 0,
+          "gemm_te": 0, "ce_te": 0}
+_REPORT_AT = [1000]      # calls of the hk-relevant paths before the first share line; then at exit
+
+
+def _count(key: str) -> None:
+    _CALLS[key] += 1
+    if sum(_CALLS.values()) == _REPORT_AT[0]:
+        _report("after warm-up")
+
+
+def _report(when: str) -> None:
+    c = _CALLS
+    attn = c["attn_hk"] + c["attn_sdpa"]
+    parts = []
+    if attn:
+        parts.append(f"attention {c['attn_hk']}/{attn} on hk")
+    if c["swiglu_bwd_hk"] or c["dgrad_hk"] or c["wgrad_hk"]:
+        gemms = c["dgrad_hk"] + c["wgrad_hk"] + c["gemm_te"]
+        parts.append(f"fc1 SwiGLU backward {c['swiglu_bwd_hk']} on hk; GEMMs through layernorm-linear: "
+                     f"{c['dgrad_hk'] + c['wgrad_hk']}/{gemms} on hk (dgrad {c['dgrad_hk']}, wgrad "
+                     f"{c['wgrad_hk']})")
+    if c["ce_te"]:
+        parts.append(f"cross-entropy {c['ce_te']} on TE's fused kernel")
+    if parts:
+        _log(f"calls {when}: " + "; ".join(parts))
+
+
 # ---------------------------------------------------------------------------------------- attention
 
 def _sdpa(q, k, v, *, causal, scale):
@@ -97,7 +127,8 @@ def _install_attention(impl: str = "") -> None:
                 raise ValueError(f"HK_MEGATRON_ATTN: mask type {mt} is not supported")
             # SBHD -> BSHD views; at B = 1 read in place (hk.ops.attn_bwd._bnhd)
             o = attention(query.transpose(0, 1), key.transpose(0, 1), value.transpose(0, 1),
-                                   causal=mt == AttnMaskType.causal, scale=self.scale)
+                          causal=mt == AttnMaskType.causal, scale=self.scale)
+            _count("attn_sdpa" if attention is _sdpa else "attn_hk")
             s, b = query.shape[0], query.shape[1]
             return o.transpose(0, 1).reshape(s, b, -1)
 
@@ -174,6 +205,7 @@ def _swiglu_function():
             sinv = torch.empty((), dtype=torch.float32, device=x.device)
             fp8_cast.swiglu_bwd_cast_transpose(g2, x2, q.scale, q.amax, out=(row, col),
                                                scale_inv=sinv)
+            _count("swiglu_bwd_hk")
             # TE's layouts: rowwise the logical (S, B, 2F), columnwise (2F, S, B)
             return _padded_f8(row.view(*shape), col.view(shape[-1], *shape[:-1]), sinv, q, shape)
 
@@ -196,6 +228,7 @@ def _route_gemm(te_gemm):
             if _is_padded(A):
                 raise RuntimeError("hk megatron_fc1_bwd: a padded fp8 operand would reach TE's GEMM, "
                                    "which ignores strides")
+            _count("gemm_te")
             return te_gemm(A, B, *args, **kw)
         layout = kw.get("layout", "TN")
         if layout == "NN":      # dgrad: dX (M, K) = dY (M, N) @ W (N, K); scaled_mm takes W^T (K, N)
@@ -206,6 +239,7 @@ def _route_gemm(te_gemm):
             if kw.get("out") is not None:
                 kw["out"].view(out.shape).copy_(out)
                 out = kw["out"]
+            _count("dgrad_hk")
             return out.view(*B.shape[:-1], wt.shape[0]), None, None, None
         if layout == "NT":      # wgrad: dW (N, K) = dY^T (N, M) @ X^T (K, M)^T, into main_grad
             xt = transpose_of(A)
@@ -216,6 +250,7 @@ def _route_gemm(te_gemm):
                                xt.view(xt.shape[0], -1).view(torch.float8_e4m3fn),
                                B._scale_inv.reshape(()), A._scale_inv.reshape(()),
                                out=out, accumulate=acc)
+            _count("wgrad_hk")
             return res, None, None, None
         raise RuntimeError(f"hk megatron_fc1_bwd: a padded fp8 operand in a {layout} GEMM")
 
@@ -292,6 +327,7 @@ def _install_te_ce(argv) -> None:
 
     def fused_vocab_parallel_cross_entropy(logits, labels, tp_group):
         labels = torch.as_strided(labels, labels.size(), (labels.size()[1], 1))  # as Megatron's te branch
+        _count("ce_te")
         return te_parallel_cross_entropy(logits, labels, tp_group, False)
 
     lm.fused_vocab_parallel_cross_entropy = fused_vocab_parallel_cross_entropy
@@ -329,7 +365,10 @@ def main(argv=None) -> None:
         raise SystemExit("usage: python -m hk.integration.megatron pretrain_gpt.py <Megatron arguments>")
     script = os.path.abspath(argv[0])
     sys.path.insert(0, os.path.dirname(script))      # Megatron's own imports, as `python script`
-    install(argv=argv[1:])
+    if install(argv=argv[1:]):
+        import atexit  # noqa: PLC0415
+
+        atexit.register(_report, "in all")
     sys.argv = [script] + argv[1:]
     runpy.run_path(script, run_name="__main__")
 
