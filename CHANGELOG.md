@@ -6,6 +6,7 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+- CI: the gfx950-vllm tier runs in vLLM's v0.34.0 release image, pinned by digest, instead of a nightly that no longer exists.
 - Pull requests link an issue that says why, and open with a plain problem paragraph (template, CONTRIBUTING) (#422).
 - `hk.ops.attn_bwd.attention` reads SBHD q, k, v and dO in place at any batch size (as one batch of B * H heads) and
   returns o and the gradients in SBHD memory. Megatron-LM at micro-batch 2: 2.65 -> 2.43 ms a fwd+bwd call on an
