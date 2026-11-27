@@ -6,6 +6,7 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+- CI: the gfx950-vllm tier runs in vLLM's v0.34.0 release image, pinned by digest, instead of a nightly that no longer exists.
 - `HK_VLLM_MOE` works on vLLM 0.34. Its MoE GEMM takes vLLM's new `A_is_sorted` / `C_is_sorted` arguments and leaves
   calls that set them to vLLM. On 0.34 the engine contract failed and turned the route off on every arch; 0.33 and
   older are unchanged.
