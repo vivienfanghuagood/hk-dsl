@@ -25,7 +25,7 @@ from __future__ import annotations
 import inspect
 import os
 import sys
-from typing import Callable, Dict, Iterable, List, Optional
+from typing import Callable, Dict, Iterable, List, Optional, Sequence
 
 #: The vLLM the DeepSeek-V4.1 routes were measured on. Another version is not a
 #: failure by itself; a broken contract is.
@@ -64,11 +64,20 @@ def signature(fn: Callable, drop_self: bool = False) -> List[list]:
             for p in _params(fn, drop_self)]
 
 
-def same_signature(engine_sig: List[list], standin: Callable, what: str) -> List[str]:
-    """`same_parameters`, with the engine's side as recorded facts (`signature`)."""
+def same_signature(engine_sig: List[list], standin: Callable, what: str,
+                   newer: Sequence[str] = ()) -> List[str]:
+    """`same_parameters`, with the engine's side as recorded facts (`signature`). `newer`: the
+    trailing parameters a later engine added that the stand-in takes and forwards only when they
+    are set; an engine that predates them (a prefix of the stand-in's) is the same signature."""
     s = _params(standin)
-    if [p[0] for p in engine_sig] != [p.name for p in s]:
-        return [f"{what} now takes {[p[0] for p in engine_sig]}, the stand-in {[p.name for p in s]}"]
+    names = [p.name for p in s]
+    tail = len(engine_sig)
+    if (tail < len(names) and [p[0] for p in engine_sig] == names[:tail]
+            and all(p.name in newer and p.default is not p.empty for p in s[tail:])):
+        s = s[:tail]
+        names = names[:tail]
+    if [p[0] for p in engine_sig] != names:
+        return [f"{what} now takes {[p[0] for p in engine_sig]}, the stand-in {names}"]
     return [f"{what}: `{name}` defaults to {rep}, the stand-in's to {ps.default!r}"
             for (name, has, rep), ps in zip(engine_sig, s)
             if has and (ps.default is ps.empty or repr(ps.default) != rep)]
@@ -307,7 +316,8 @@ def judge_vllm_moe(f: dict) -> List[str]:
     from . import vllm_moe  # noqa: PLC0415
 
     return (same_signature(f["invoke_fused_moe_triton_kernel"],
-                           vllm_moe.invoke_fused_moe_triton_kernel, "invoke_fused_moe_triton_kernel")
+                           vllm_moe.invoke_fused_moe_triton_kernel, "invoke_fused_moe_triton_kernel",
+                           newer=vllm_moe.NEWER_PARAMS)
             + same_signature(f["try_get_optimal_moe_config"], vllm_moe.try_get_optimal_moe_config,
                              "try_get_optimal_moe_config"))
 
