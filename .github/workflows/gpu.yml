@@ -63,7 +63,9 @@ jobs:
     env:
       HK_CI_TIER: gfx950-vllm
       HK_CI_DIRNAME: x950v
-      HK_CI_IMAGE: vllm/vllm-openai-rocm:nightly-rocm100-e68efc685ab1e6f1eda004ced7157e3ca411da2f
+      # vLLM's v0.34.0 release image, pinned by digest: a nightly tag can disappear upstream (the previous
+      # nightly-rocm100-e68efc685 did, 11-27), a release digest stays pullable.
+      HK_CI_IMAGE: vllm/vllm-openai-rocm@sha256:3cb773d23f063afa86291ef75773cdd486154ddea94c213300f4ed7cc42b7af1
       HK_CI_TESTS: >-
         tests/hk/gpu/test_engine_contract.py tests/hk/gpu/test_vllm_mxfp8.py
         tests/hk/gpu/test_vllm_moe_a8w4.py tests/hk/gpu/test_mxfp8_quant.py
