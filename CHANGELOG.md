@@ -7,7 +7,10 @@ The next version's notes collect here until it is released.
 ## Unreleased
 
 - CI: the gfx950-vllm tier runs in vLLM's v0.34.0 release image, pinned by digest, instead of a nightly that no longer exists.
-- Pull requests link an issue that says why, and open with a plain problem paragraph (template, CONTRIBUTING) (#422).
+- `HK_VLLM_MOE` works on vLLM 0.34. Its MoE GEMM takes vLLM's new `A_is_sorted` / `C_is_sorted` arguments and leaves
+  calls that set them to vLLM. On 0.34 the engine contract failed and turned the route off on every arch; 0.33 and
+  older are unchanged.
+- Pull requests open with a plain paragraph stating the problem and the reason (template, CONTRIBUTING).
 - `hk.ops.attn_bwd.attention` reads SBHD q, k, v and dO in place at any batch size (as one batch of B * H heads) and
   returns o and the gradients in SBHD memory. Megatron-LM at micro-batch 2: 2.65 -> 2.43 ms a fwd+bwd call on an
   R9700, bit-identical.
