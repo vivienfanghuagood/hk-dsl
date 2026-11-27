@@ -36,9 +36,9 @@ Then:
 
 ## The rules
 
-Issues and pull requests are welcome. A pull request links the issue in this repository that says why
-it is needed, and opens with one plain paragraph stating the problem (what goes wrong, for whom, how it
-shows); the [template](.github/pull_request_template.md) asks for both. These pages cover the mechanics:
+Issues and pull requests are welcome. A pull request opens with one plain paragraph stating the problem
+and the reason for the change (what goes wrong, for whom, how it shows, why now); the
+[template](.github/pull_request_template.md) asks for it. Link an issue if one exists. These pages cover the mechanics:
 - [testing](docs/testing.md): the tiers, and the gates for a change to the generated code;
 - [the default-on rule](docs/testing.md#the-default-on-rule): what an engine route needs before it
   is on by default (a 1.15x time-weighted win at a real model's shapes, only on shapes where hk is

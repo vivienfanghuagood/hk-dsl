@@ -6,7 +6,7 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
-- Pull requests link an issue that says why, and open with a plain problem paragraph (template, CONTRIBUTING) (#422).
+- Pull requests open with a plain paragraph stating the problem and the reason (template, CONTRIBUTING).
 - `hk.ops.attn_bwd.attention` reads SBHD q, k, v and dO in place at any batch size (as one batch of B * H heads) and
   returns o and the gradients in SBHD memory. Megatron-LM at micro-batch 2: 2.65 -> 2.43 ms a fwd+bwd call on an
   R9700, bit-identical.

@@ -2,13 +2,12 @@
 hk-dsl PR template (owner decision D-20261113-12). Model: vllm-project/vllm#59132. Delete what does not apply,
 but say so ("no performance claim", "no new switch") rather than leaving a section out silently.
 Small and scoped: one change per PR, no stacked PRs. No number that this PR does not measure itself.
-Not ready to merge without the issue link and the problem paragraph below (#422).
+Not ready to merge without the problem paragraph below.
 -->
 
-**Issue:** #<number> -- the issue in this repository that says why this change is needed.
-
-**Problem.** One plain paragraph, before anything else: what goes wrong today, for whom, and how it shows
-(an error, a slow path, a missing feature someone needs). No solution in this paragraph.
+**Problem.** One plain paragraph, before anything else: what goes wrong today, for whom, how it shows (an
+error, a slow path, a missing feature someone needs), and why it needs fixing now. No solution in this paragraph.
+Link an issue if one already exists; do not open one just for the pull request.
 
 ## Summary
 
