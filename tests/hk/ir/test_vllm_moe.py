@@ -133,3 +133,70 @@ def test_reverting_moe_under_moe_wna16_leaves_a_working_chain(monkeypatch):
     assert "moe_wna16 -> vllm" in vllm_moe_wna16.revert()
     assert fm.try_get_optimal_moe_config is not None
     assert fm.try_get_optimal_moe_config((8, 512, 2048), (8, 2048, 256), 2, None, 4) == {"BLOCK_SIZE_M": 64}
+
+
+def _engine_sig(*added):
+    """invoke_fused_moe_triton_kernel's recorded facts: vLLM up to 0.33 (ends at B_bias), plus
+    the trailing parameters a later vLLM added, each defaulting to False."""
+    from hk.integration import contract
+
+    sig = contract.signature(vllm_moe.invoke_fused_moe_triton_kernel)
+    upto = [p[0] for p in sig].index("B_bias") + 1
+    return sig[:upto] + [[name, True, "False"] for name in added]
+
+
+@pytest.mark.parametrize("added", [(), ("A_is_sorted", "C_is_sorted")])
+def test_the_stand_in_matches_vllm_before_and_after_the_sorted_flags(added):
+    """vLLM 0.34 added A_is_sorted / C_is_sorted. The stand-in takes them, and the contract still
+    holds on a vLLM that predates them (0.33 and older), so one hk serves both."""
+    from hk.integration import contract
+
+    assert contract.same_signature(_engine_sig(*added), vllm_moe.invoke_fused_moe_triton_kernel,
+                                   "invoke_fused_moe_triton_kernel",
+                                   newer=vllm_moe.NEWER_PARAMS) == []
+
+
+def test_a_parameter_hk_does_not_know_still_breaks_the_contract():
+    """Only the declared newer parameters may be missing from the engine; one hk has never seen
+    turns the route off rather than going into the wrong slot."""
+    from hk.integration import contract
+
+    for sig in (_engine_sig("A_is_sorted", "C_is_sorted", "D_is_new"), _engine_sig("C_is_sorted")):
+        assert contract.same_signature(sig, vllm_moe.invoke_fused_moe_triton_kernel,
+                                       "invoke_fused_moe_triton_kernel",
+                                       newer=vllm_moe.NEWER_PARAMS) != []
+    # without the declaration the older engine is a mismatch, as before
+    assert contract.same_signature(_engine_sig(), vllm_moe.invoke_fused_moe_triton_kernel,
+                                   "invoke_fused_moe_triton_kernel") != []
+
+
+@pytest.mark.parametrize("flags", [dict(), dict(A_is_sorted=True), dict(C_is_sorted=True)])
+def test_a_sorted_layout_goes_to_vllm_and_reaches_it(monkeypatch, flags):
+    """hk's GEMM reads A and writes C in token order: a call in either sorted layout falls back,
+    with the flag forwarded; at their defaults the flags are not forwarded at all, so a vLLM
+    without them (0.33) is called as before."""
+    seen = {}
+
+    def orig(*args, **kwargs):
+        seen["n"], seen["kw"] = len(args), kwargs
+
+    launched = []
+    monkeypatch.setattr(vllm_moe, "_ORIG", orig)
+    monkeypatch.setattr(vllm_moe, "block16_max", lambda: 64)
+    monkeypatch.setattr(moe, "takes", lambda A, B, bm: True)
+    monkeypatch.setattr(moe, "_launch", lambda *a, **k: launched.append(1))
+
+    class T:                        # just what the stand-in reads off A and C
+        is_cuda = True
+        shape = (4, 2, 64)
+
+        def dim(self):
+            return 3
+
+    args = (T(), None, T(), None, None, None, None, None, None, False, 2, {"BLOCK_SIZE_M": 16},
+            None, False, False, False, False, False)
+    vllm_moe.invoke_fused_moe_triton_kernel(*args, **flags)
+    if flags:
+        assert launched == [] and seen == {"n": 20, "kw": flags}
+    else:
+        assert launched == [1] and seen == {}

@@ -56,6 +56,13 @@ PATCH = engine.Patch("hk_vllm::moe", paths=("hk", "fallback"), graph="safe")
 STATS = PATCH.stats
 
 
+#: Parameters a later vLLM added to `invoke_fused_moe_triton_kernel` (0.34: the sorted-row
+#: layouts of its fp8 TMA path, A read and C written in sorted_token_ids order). hk's GEMM reads A
+#: and writes C in token order, so a call that sets either goes back to vLLM's kernel; at their
+#: defaults they are not forwarded, so the one stand-in serves a vLLM that predates them.
+NEWER_PARAMS = ("A_is_sorted", "C_is_sorted")
+
+
 def _plain(A_scale, B_scale, B_bias, block_shape, *quant_flags) -> bool:
     return not any(quant_flags) and A_scale is None and B_scale is None \
         and B_bias is None and block_shape is None
@@ -67,7 +74,7 @@ def invoke_fused_moe_triton_kernel(A, B, C, A_scale, B_scale, topk_weights,
                                    top_k, config, compute_type, use_fp8_w8a8,
                                    use_int8_w8a8, use_int8_w8a16, use_int4_w4a16,
                                    per_channel_quant, block_shape=None,
-                                   B_bias=None):
+                                   B_bias=None, A_is_sorted=False, C_is_sorted=False):
     """Stands in for vLLM's: hk's GEMM where it takes the call, vLLM's
     otherwise. Same arguments, same in-place write of C."""
     from ..ops import moe  # noqa: PLC0415
@@ -77,7 +84,7 @@ def invoke_fused_moe_triton_kernel(A, B, C, A_scale, B_scale, topk_weights,
     bm = config.get("BLOCK_SIZE_M", 0)
     # C is (tokens, top_k, N) for both GEMMs of the layer.
     tokens = C.shape[0] if C.dim() == 3 else A.shape[0]
-    if (bm == 16 and A.is_cuda and tokens <= block16_max()
+    if (bm == 16 and A.is_cuda and tokens <= block16_max() and not (A_is_sorted or C_is_sorted)
             and _plain(A_scale, B_scale, B_bias, block_shape, use_fp8_w8a8,
                        use_int8_w8a8, use_int8_w8a16, use_int4_w4a16)
             and moe.takes(A, B, bm)):
@@ -87,11 +94,12 @@ def invoke_fused_moe_triton_kernel(A, B, C, A_scale, B_scale, topk_weights,
         PATCH.count("hk")
         return None
     PATCH.count("fallback")
+    newer = {k: True for k, v in (("A_is_sorted", A_is_sorted), ("C_is_sorted", C_is_sorted)) if v}
     return _ORIG(A, B, C, A_scale, B_scale, topk_weights, sorted_token_ids,
                  expert_ids, num_tokens_post_padded, mul_routed_weight, top_k,
                  config, compute_type, use_fp8_w8a8, use_int8_w8a8,
                  use_int8_w8a16, use_int4_w4a16, per_channel_quant,
-                 block_shape, B_bias)
+                 block_shape, B_bias, **newer)
 
 
 _GUARDED = PATCH.guard(invoke_fused_moe_triton_kernel)
