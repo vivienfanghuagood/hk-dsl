@@ -153,7 +153,8 @@ def render() -> str:
       f"the wheel) | {n['rocm']} | {n['python']} | -- |")
     w("")
     w(f"gfx950 has a second GPU tier, gfx950-vllm: the gfx950 routes' tests and their engine "
-      f"contract, in the vLLM image they were measured on (`{ci_vllm_tier()}`, below).")
+      f"contract, in vLLM's v0.34.0 release image, pinned by digest (`{ci_vllm_tier()}`, below). "
+      f"The routes were measured on an earlier vLLM nightly (0.32.1rc1); this tier checks they still hold.")
     w("")
     w("`pip install hk-dsl` needs Python 3.10 or newer; torch is optional, and needed only to "
       "call kernels with torch tensors or to use [`hk.torch_op`](runtime.md#torch-ops-and-the-sdpa-drop-in).")

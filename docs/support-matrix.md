@@ -15,7 +15,7 @@ Every pull request runs the no-GPU tiers, and the GPU tier on each arch before i
 | gfx950 | Instinct MI355X | `rocm/pytorch:rocm7.2.3_ubuntu24.04_py3.12_pytorch_release_2.10.0` | 7.2.3 | 3.12 | 2.10.0 |
 | none | -- | Ubuntu 22.04, hipcc from ROCm 7.1 (the IR and codegen tiers, the wheel) | 7.1 | 3.10 | -- |
 
-gfx950 has a second GPU tier, gfx950-vllm: the gfx950 routes' tests and their engine contract, in the vLLM image they were measured on (`vllm/vllm-openai-rocm@sha256:3cb773d23f063afa86291ef75773cdd486154ddea94c213300f4ed7cc42b7af1`, below).
+gfx950 has a second GPU tier, gfx950-vllm: the gfx950 routes' tests and their engine contract, in vLLM's v0.34.0 release image, pinned by digest (`vllm/vllm-openai-rocm@sha256:3cb773d23f063afa86291ef75773cdd486154ddea94c213300f4ed7cc42b7af1`, below). The routes were measured on an earlier vLLM nightly (0.32.1rc1); this tier checks they still hold.
 
 `pip install hk-dsl` needs Python 3.10 or newer; torch is optional, and needed only to call kernels with torch tensors or to use [`hk.torch_op`](runtime.md#torch-ops-and-the-sdpa-drop-in).
 
